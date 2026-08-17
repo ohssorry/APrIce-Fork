@@ -114,6 +114,9 @@ The price database is plain YAML for exactly that reason:
 Adding or correcting a model is a one-line change to one file. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+**팀원이신가요?** [`docs/onboarding.md`](docs/onboarding.md)부터 읽으세요 —
+환경 세팅, 저장소 구조, 협업 규칙, 일정이 정리돼 있습니다.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
