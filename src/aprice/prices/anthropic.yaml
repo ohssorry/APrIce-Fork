@@ -1,0 +1,47 @@
+# Anthropic API pricing, USD per million tokens.
+# Source: https://platform.claude.com/docs/en/pricing
+provider: anthropic
+currency: USD
+models:
+  - id: claude-opus-5
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    verified_on: 2026-08-17
+
+  - id: claude-opus-4-8
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    verified_on: 2026-08-17
+
+  - id: claude-opus-4-7
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    verified_on: 2026-08-17
+
+  - id: claude-opus-4-6
+    input_per_mtok: 5.00
+    output_per_mtok: 25.00
+    verified_on: 2026-08-17
+
+  - id: claude-sonnet-5
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    verified_on: 2026-08-17
+    note: >-
+      Introductory pricing of 2.00 / 10.00 applies through 2026-08-31.
+      Listed at standard rates.
+
+  - id: claude-sonnet-4-6
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    verified_on: 2026-08-17
+
+  - id: claude-haiku-4-5
+    input_per_mtok: 1.00
+    output_per_mtok: 5.00
+    verified_on: 2026-08-17
+
+  - id: claude-fable-5
+    input_per_mtok: 10.00
+    output_per_mtok: 50.00
+    verified_on: 2026-08-17

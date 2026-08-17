@@ -1,0 +1,4 @@
+# Normalize line endings so Windows and Linux contributors don't fight over
+# whole-file diffs.
+* text=auto eol=lf
+*.png binary

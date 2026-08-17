@@ -1,0 +1,19 @@
+# OpenAI API pricing, USD per million tokens.
+#
+# UNVERIFIED. Every entry below is a placeholder and must be checked against
+# https://openai.com/api/pricing before release. See issue "Verify OpenAI
+# price table" -- this is a good first contribution.
+provider: openai
+currency: USD
+models:
+  - id: gpt-4o
+    input_per_mtok: 0.0
+    output_per_mtok: 0.0
+    verified_on: null
+    note: PLACEHOLDER -- needs verification against the official price page.
+
+  - id: gpt-4o-mini
+    input_per_mtok: 0.0
+    output_per_mtok: 0.0
+    verified_on: null
+    note: PLACEHOLDER -- needs verification against the official price page.
