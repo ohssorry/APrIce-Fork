@@ -86,7 +86,11 @@ aprice scan path/to/code                    # scan a file or directory
 aprice scan src/ --format markdown          # PR-comment-ready output
 aprice scan src/ --input-tokens 4000        # change the input-length assumption
 aprice scan src/ --fail-on-warning          # exit 1 on any cost risk (for CI)
+aprice diff --base origin/develop --head HEAD  # cost change vs. a base branch, before you merge
 ```
+
+`aprice diff` scans both refs from a throwaway `git worktree` -- it never touches
+your actual working tree, staged or unstaged changes included.
 
 ## Supported providers
 
