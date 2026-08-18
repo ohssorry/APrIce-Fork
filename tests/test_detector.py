@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from aprice import detector, rules
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_app.py"
@@ -16,6 +18,28 @@ def test_finds_every_call_site():
 def test_reads_provider_from_attribute_path():
     providers = {c.provider for c in calls()}
     assert providers == {"anthropic", "openai"}
+
+
+@pytest.mark.parametrize(
+    ("expression", "provider"),
+    [
+        ("client.embeddings.create(model='text-embedding-3-small')", "openai"),
+        ("client.images.generate(model='gpt-image-1')", "openai"),
+        ("client.images.edit(model='gpt-image-1')", "openai"),
+        ("client.images.create_variation(model='dall-e-2')", "openai"),
+        ("client.audio.speech.create(model='gpt-4o-mini-tts')", "openai"),
+        ("client.audio.transcriptions.create(model='whisper-1')", "openai"),
+        ("client.audio.translations.create(model='whisper-1')", "openai"),
+        ("client.completions.create(model='gpt-3.5-turbo-instruct')", "openai"),
+        ("client.messages.batches.create(requests=[])", "anthropic"),
+        ("client.models.embed_content(model='gemini-embedding-001')", "google"),
+    ],
+)
+def test_detects_supported_paid_sdk_calls(expression, provider):
+    detected = detector.scan_source(expression, "supported_calls.py")
+
+    assert len(detected) == 1
+    assert detected[0].provider == provider
 
 
 def test_reads_literal_model_and_max_tokens():

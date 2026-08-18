@@ -25,10 +25,20 @@ from .models import ApiCall
 CALL_SIGNATURES: dict[tuple[str, ...], str] = {
     ("messages", "create"): "anthropic",
     ("messages", "stream"): "anthropic",
+    ("messages", "batches", "create"): "anthropic",
     ("chat", "completions", "create"): "openai",
     ("responses", "create"): "openai",
+    ("completions", "create"): "openai",
+    ("embeddings", "create"): "openai",
+    ("images", "generate"): "openai",
+    ("images", "edit"): "openai",
+    ("images", "create_variation"): "openai",
+    ("audio", "speech", "create"): "openai",
+    ("audio", "transcriptions", "create"): "openai",
+    ("audio", "translations", "create"): "openai",
     ("generate_content",): "google",
     ("models", "generate_content"): "google",
+    ("models", "embed_content"): "google",
 }
 
 
