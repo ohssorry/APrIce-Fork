@@ -95,7 +95,11 @@ def _validate_entry(entry: dict, provider: str, path: Path, seen_ids: set[str]) 
             f"{path.name}: '{model_id}' has verified_on '{verified_on}' -- expected YYYY-MM-DD"
         )
 
-    if verified_date > dt.date.today():
+    # Compare against UTC "today" with a 1-day grace window: a contributor
+    # west of UTC can date-stamp verified_on with a local "today" that is
+    # still "tomorrow" in UTC, which is when CI actually runs the check.
+    utc_today = dt.datetime.now(dt.timezone.utc).date()
+    if verified_date > utc_today + dt.timedelta(days=1):
         raise PriceFileError(
             f"{path.name}: '{model_id}' has a future verified_on date '{verified_date}'"
         )
