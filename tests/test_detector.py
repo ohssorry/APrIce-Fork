@@ -30,6 +30,56 @@ def test_detects_loop_nesting_depth():
     assert depths == [0, 0, 0, 1, 2]
 
 
+def test_comprehension_iterable_is_evaluated_before_loop():
+    source = """
+[
+    client.responses.create(model="body", max_tokens=10)
+    for item in client.responses.create(model="iterable", max_tokens=10)
+    if client.responses.create(model="condition", max_tokens=10)
+]
+"""
+
+    detected = {call.model: call for call in detector.scan_source(source, "comprehension.py")}
+
+    assert detected["iterable"].loop_depth == 0
+    assert detected["condition"].loop_depth == 1
+    assert detected["body"].loop_depth == 1
+    assert not any(f.rule == "call-in-loop" for f in rules.check(detected["iterable"]))
+
+
+def test_comprehension_generators_increase_depth_in_evaluation_order():
+    source = """
+[
+    client.responses.create(model="body", max_tokens=10)
+    for first in client.responses.create(model="outer-iterable", max_tokens=10)
+    if client.responses.create(model="outer-condition", max_tokens=10)
+    for second in client.responses.create(model="inner-iterable", max_tokens=10)
+    if client.responses.create(model="inner-condition", max_tokens=10)
+]
+"""
+
+    detected = {call.model: call for call in detector.scan_source(source, "nested_comp.py")}
+
+    assert detected["outer-iterable"].loop_depth == 0
+    assert detected["outer-condition"].loop_depth == 1
+    assert detected["inner-iterable"].loop_depth == 1
+    assert detected["inner-condition"].loop_depth == 2
+    assert detected["body"].loop_depth == 2
+
+
+def test_all_comprehension_result_kinds_run_inside_the_loop():
+    sources = (
+        "[client.responses.create(model='list', max_tokens=10) for x in items]",
+        "{client.responses.create(model='set', max_tokens=10) for x in items}",
+        "{x: client.responses.create(model='dict', max_tokens=10) for x in items}",
+        "(client.responses.create(model='generator', max_tokens=10) for x in items)",
+    )
+
+    for source in sources:
+        call = detector.scan_source(source, "comprehension_kinds.py")[0]
+        assert call.loop_depth == 1
+
+
 def test_model_from_variable_is_detected_but_not_resolved():
     dynamic = next(c for c in calls() if c.model is None and c.max_tokens == 512)
     assert dynamic.provider == "anthropic"

@@ -76,10 +76,36 @@ class _CallVisitor(ast.NodeVisitor):
     visit_For = _visit_loop
     visit_AsyncFor = _visit_loop
     visit_While = _visit_loop
-    visit_ListComp = _visit_loop
-    visit_SetComp = _visit_loop
-    visit_DictComp = _visit_loop
-    visit_GeneratorExp = _visit_loop
+
+    def _visit_comprehension(
+        self, generators: list[ast.comprehension], result_nodes: tuple[ast.AST, ...]
+    ) -> None:
+        starting_depth = self._loop_depth
+        try:
+            for generator in generators:
+                # The first iterable is evaluated before its loop starts. Each
+                # later iterable is evaluated inside all preceding loops.
+                self.visit(generator.iter)
+                self._loop_depth += 1
+                self.visit(generator.target)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for result_node in result_nodes:
+                self.visit(result_node)
+        finally:
+            self._loop_depth = starting_depth
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, (node.key, node.value))
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
 
     def visit_Call(self, node: ast.Call) -> None:
         provider = _match_provider(_dotted_path(node.func))
