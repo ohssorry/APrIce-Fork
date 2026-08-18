@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from aprice import pricing
@@ -80,3 +82,68 @@ def test_google_prices_have_no_zero_placeholders():
             continue
         assert price.input_per_mtok > 0
         assert price.output_per_mtok > 0
+
+
+# B-03: schema validation for prices/*.yaml. Exercises _validate_entry
+# directly with in-memory dicts so a bad-data test doesn't need a temp file
+# on disk or to disturb the load_prices() cache used by the tests above.
+
+
+def entry(**overrides):
+    base = {
+        "id": "test-model",
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 2.0,
+        "verified_on": "2026-01-01",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_valid_entry_builds_a_price():
+    price = pricing._validate_entry(entry(), "test", Path("test.yaml"), set())
+    assert price.model == "test-model"
+    assert price.input_per_mtok == 1.0
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["id", "input_per_mtok", "output_per_mtok", "verified_on"]
+)
+def test_missing_required_field_is_rejected(missing_field):
+    bad = entry()
+    del bad[missing_field]
+    with pytest.raises(pricing.PriceFileError, match="missing required field"):
+        pricing._validate_entry(bad, "test", Path("test.yaml"), set())
+
+
+def test_duplicate_model_id_is_rejected():
+    seen = {"test-model"}
+    with pytest.raises(pricing.PriceFileError, match="duplicate model id"):
+        pricing._validate_entry(entry(), "test", Path("test.yaml"), seen)
+
+
+@pytest.mark.parametrize("field", ["input_per_mtok", "output_per_mtok"])
+def test_negative_price_is_rejected(field):
+    with pytest.raises(pricing.PriceFileError, match="negative price"):
+        pricing._validate_entry(entry(**{field: -1.0}), "test", Path("test.yaml"), set())
+
+
+@pytest.mark.parametrize("field", ["input_per_mtok", "output_per_mtok"])
+def test_zero_placeholder_price_is_rejected(field):
+    with pytest.raises(pricing.PriceFileError, match="placeholder"):
+        pricing._validate_entry(entry(**{field: 0.0}), "test", Path("test.yaml"), set())
+
+
+def test_malformed_verified_on_date_is_rejected():
+    with pytest.raises(pricing.PriceFileError, match="YYYY-MM-DD"):
+        pricing._validate_entry(entry(verified_on="not-a-date"), "test", Path("test.yaml"), set())
+
+
+def test_future_verified_on_date_is_rejected():
+    with pytest.raises(pricing.PriceFileError, match="future"):
+        pricing._validate_entry(entry(verified_on="2999-01-01"), "test", Path("test.yaml"), set())
+
+
+def test_error_message_names_the_file_and_the_model():
+    with pytest.raises(pricing.PriceFileError, match=r"bogus\.yaml.*test-model"):
+        pricing._validate_entry(entry(input_per_mtok=-1.0), "test", Path("bogus.yaml"), set())
