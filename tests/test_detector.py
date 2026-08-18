@@ -1,4 +1,7 @@
+import warnings
 from pathlib import Path
+
+import pytest
 
 from aprice import detector, rules
 
@@ -41,7 +44,38 @@ def test_missing_max_tokens_is_none_not_zero():
 
 
 def test_unparseable_source_is_skipped_not_fatal():
-    assert detector.scan_source("def broken(:\n", "broken.py") == []
+    with pytest.warns(
+        detector.ParseFailureWarning, match="Could not parse Python source"
+    ) as caught:
+        assert detector.scan_source("def broken(:\n", "broken.py") == []
+
+    assert caught[0].filename == "broken.py"
+    assert caught[0].lineno == 1
+    assert "column" in str(caught[0].message)
+
+
+def test_source_without_calls_does_not_emit_parse_failure_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", detector.ParseFailureWarning)
+        assert detector.scan_source("value = 1\n", "valid.py") == []
+
+
+def test_scan_path_reports_broken_file_and_keeps_valid_results(tmp_path: Path):
+    valid = tmp_path / "valid.py"
+    broken = tmp_path / "broken.py"
+    valid.write_text(
+        'client.messages.create(model="claude-sonnet-5", max_tokens=10)\n',
+        encoding="utf-8",
+    )
+    broken.write_text("def broken(:\n", encoding="utf-8")
+
+    with pytest.warns(detector.ParseFailureWarning) as caught:
+        detected = detector.scan_path(tmp_path)
+
+    assert len(detected) == 1
+    assert detected[0].model == "claude-sonnet-5"
+    assert Path(caught[0].filename) == broken
+    assert caught[0].lineno == 1
 
 
 def test_call_in_loop_raises_a_warning():

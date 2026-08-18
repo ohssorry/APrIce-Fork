@@ -17,9 +17,15 @@ read keyword arguments -- both of which we need.
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 
 from .models import ApiCall
+
+
+class ParseFailureWarning(UserWarning):
+    """A Python file could not be parsed and was excluded from analysis."""
+
 
 # Suffix of the callee's dotted path -> provider key in the price database.
 CALL_SIGNATURES: dict[tuple[str, ...], str] = {
@@ -108,7 +114,15 @@ def scan_source(source: str, filename: str) -> list[ApiCall]:
     """
     try:
         tree = ast.parse(source, filename=filename)
-    except SyntaxError:
+    except SyntaxError as error:
+        line = error.lineno or 1
+        column = error.offset if error.offset is not None else "unknown"
+        warnings.warn_explicit(
+            f"Could not parse Python source at column {column}: {error.msg}",
+            ParseFailureWarning,
+            filename=filename,
+            lineno=line,
+        )
         return []
     visitor = _CallVisitor(filename)
     visitor.visit(tree)
