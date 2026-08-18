@@ -44,3 +44,21 @@ def test_every_price_entry_is_wellformed():
         assert provider and model
         assert price.input_per_mtok >= 0
         assert price.output_per_mtok >= 0
+
+
+def test_openai_model_resolves_to_a_price():
+    price = pricing.lookup("openai", "gpt-4o")
+    assert price is not None
+    assert price.input_per_mtok == 2.50
+    assert price.output_per_mtok == 10.00
+
+
+def test_openai_prices_have_no_zero_placeholders():
+    # B-01: unverified models must be left out of the file rather than
+    # kept with a 0.00 placeholder, so a priced OpenAI model should never
+    # come back free.
+    for (provider, _model), price in pricing.load_prices().items():
+        if provider != "openai":
+            continue
+        assert price.input_per_mtok > 0
+        assert price.output_per_mtok > 0
