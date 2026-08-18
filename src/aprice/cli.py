@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_cmd.add_argument("path", type=Path, help="File or directory to scan.")
     scan_cmd.add_argument(
         "--format",
-        choices=["text", "markdown"],
+        choices=["text", "markdown", "json"],
         default="text",
         help="Output format (default: text).",
     )
@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.format == "markdown":
         print(report.render_markdown(result))
+    elif args.format == "json":
+        print(report.render_json(result))
     else:
         print(report.render_terminal(result))
 
