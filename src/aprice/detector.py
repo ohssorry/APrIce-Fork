@@ -31,6 +31,10 @@ CALL_SIGNATURES: dict[tuple[str, ...], str] = {
     ("models", "generate_content"): "google",
 }
 
+# Prefer the most specific suffix without sorting the same static table for
+# every Call node visited in a source tree.
+CALL_SIGNATURES_LONGEST_FIRST = tuple(sorted(CALL_SIGNATURES, key=len, reverse=True))
+
 # SDKs name the same output ceiling differently. Keep this translation next
 # to call detection so pricing and rules can continue to use one normalized
 # ApiCall field without depending on provider-specific argument names.
@@ -55,7 +59,7 @@ def _dotted_path(node: ast.AST) -> tuple[str, ...]:
 
 
 def _match_signature(path: tuple[str, ...]) -> tuple[str, ...] | None:
-    for signature in sorted(CALL_SIGNATURES, key=len, reverse=True):
+    for signature in CALL_SIGNATURES_LONGEST_FIRST:
         if len(path) >= len(signature) and path[-len(signature) :] == signature:
             return signature
     return None
