@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from .diff import CallDiff, DiffResult
 from .models import ApiCall, ScanResult
 
 # Bump when the JSON shape changes so consumers (the diff command, CI
@@ -142,5 +143,102 @@ def render_json(result: ScanResult) -> str:
             }
             for finding in result.findings
         ],
+    }
+    return json.dumps(payload, indent=2)
+
+
+_STATUS_MARKER = {"added": "+", "removed": "-", "changed": "~"}
+
+
+def _signed_usd(amount: float) -> str:
+    sign = "+" if amount >= 0 else "-"
+    return f"{sign}{_usd(abs(amount))}"
+
+
+def _entry_call(entry: CallDiff) -> ApiCall:
+    call = entry.head if entry.head is not None else entry.base
+    assert call is not None
+    return call
+
+
+def _entry_cost_text(entry: CallDiff) -> str:
+    # base_cost and head_cost are both None for an added/removed call that
+    # was never priced (dynamic model, unknown price) -- report it as
+    # "unpriced" rather than dropping it, so a volume change in unpriced
+    # calls is still visible.
+    if entry.base_cost is None and entry.head_cost is None:
+        return "unpriced"
+    b_low, b_high = entry.base_cost or (0.0, 0.0)
+    h_low, h_high = entry.head_cost or (0.0, 0.0)
+    return f"low {_signed_usd(h_low - b_low)}  high {_signed_usd(h_high - b_high)}"
+
+
+def render_diff_text(diff: DiffResult) -> str:
+    lines = [f"APrIce: cost delta {diff.base_ref} -> {diff.head_ref}\n"]
+
+    if not diff.entries:
+        lines.append("No API call changes detected.")
+    else:
+        for entry in diff.entries:
+            call = _entry_call(entry)
+            model = call.model or "<dynamic>"
+            lines.append(
+                f"  {_STATUS_MARKER[entry.status]} {call.location}  "
+                f"{call.provider}/{model:<24} {_entry_cost_text(entry)}  [{entry.status}]"
+            )
+
+    lines.append(
+        f"\n  Net change per request: low {_signed_usd(diff.delta_low)}  "
+        f"high {_signed_usd(diff.delta_high)}"
+    )
+    return "\n".join(lines)
+
+
+def render_diff_markdown(diff: DiffResult) -> str:
+    lines = [f"## APrIce cost delta: `{diff.base_ref}` -> `{diff.head_ref}`", ""]
+
+    if not diff.entries:
+        lines.append("No API call changes detected.")
+    else:
+        lines.append("| | Location | Model | Cost change per request |")
+        lines.append("|---|---|---|---|")
+        for entry in diff.entries:
+            call = _entry_call(entry)
+            lines.append(
+                f"| {_STATUS_MARKER[entry.status]} | `{call.location}` | "
+                f"`{call.provider}/{call.model or '<dynamic>'}` | {_entry_cost_text(entry)} |"
+            )
+        lines.append("")
+
+    lines.append(
+        f"**Net change per request: low {_signed_usd(diff.delta_low)}, "
+        f"high {_signed_usd(diff.delta_high)}**"
+    )
+    lines.append("")
+    lines.append(
+        "<sub>Per-request cost only -- call volume is not inferred from source. "
+        "See `docs/methodology.md`.</sub>"
+    )
+    return "\n".join(lines)
+
+
+def render_diff_json(diff: DiffResult) -> str:
+    def cost_obj(cost: tuple[float, float] | None) -> dict | None:
+        return {"low": cost[0], "high": cost[1]} if cost is not None else None
+
+    payload = {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "base_ref": diff.base_ref,
+        "head_ref": diff.head_ref,
+        "entries": [
+            {
+                "status": entry.status,
+                **_call_dict(_entry_call(entry)),
+                "base_cost_usd": cost_obj(entry.base_cost),
+                "head_cost_usd": cost_obj(entry.head_cost),
+            }
+            for entry in diff.entries
+        ],
+        "total_delta_usd": {"low": diff.delta_low, "high": diff.delta_high},
     }
     return json.dumps(payload, indent=2)
