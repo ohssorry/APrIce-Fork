@@ -31,6 +31,19 @@ CALL_SIGNATURES: dict[tuple[str, ...], str] = {
     ("models", "generate_content"): "google",
 }
 
+# Prefer the most specific suffix without sorting the same static table for
+# every Call node visited in a source tree.
+CALL_SIGNATURES_LONGEST_FIRST = tuple(sorted(CALL_SIGNATURES, key=len, reverse=True))
+
+# SDKs name the same output ceiling differently. Keep this translation next
+# to call detection so pricing and rules can continue to use one normalized
+# ApiCall field without depending on provider-specific argument names.
+OUTPUT_TOKEN_ARGUMENTS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("chat", "completions", "create"): ("max_completion_tokens", "max_tokens"),
+    ("responses", "create"): ("max_output_tokens", "max_tokens"),
+}
+DEFAULT_OUTPUT_TOKEN_ARGUMENTS = ("max_tokens",)
+
 
 def _dotted_path(node: ast.AST) -> tuple[str, ...]:
     """Flatten ``a.b.c`` (or ``a().b.c``) into ``("a", "b", "c")``."""
@@ -45,10 +58,10 @@ def _dotted_path(node: ast.AST) -> tuple[str, ...]:
     return tuple(reversed(parts))
 
 
-def _match_provider(path: tuple[str, ...]) -> str | None:
-    for signature, provider in CALL_SIGNATURES.items():
+def _match_signature(path: tuple[str, ...]) -> tuple[str, ...] | None:
+    for signature in CALL_SIGNATURES_LONGEST_FIRST:
         if len(path) >= len(signature) and path[-len(signature) :] == signature:
-            return provider
+            return signature
     return None
 
 
@@ -60,6 +73,14 @@ def _literal(node: ast.AST | None) -> object | None:
         return ast.literal_eval(node)
     except (ValueError, SyntaxError):
         return None
+
+
+def _output_token_limit(signature: tuple[str, ...], kwargs: dict[str, ast.AST]) -> object | None:
+    argument_names = OUTPUT_TOKEN_ARGUMENTS.get(signature, DEFAULT_OUTPUT_TOKEN_ARGUMENTS)
+    for name in argument_names:
+        if name in kwargs:
+            return _literal(kwargs[name])
+    return None
 
 
 class _CallVisitor(ast.NodeVisitor):
@@ -82,14 +103,14 @@ class _CallVisitor(ast.NodeVisitor):
     visit_GeneratorExp = _visit_loop
 
     def visit_Call(self, node: ast.Call) -> None:
-        provider = _match_provider(_dotted_path(node.func))
-        if provider is not None:
+        signature = _match_signature(_dotted_path(node.func))
+        if signature is not None:
             kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
             model = _literal(kwargs.get("model"))
-            max_tokens = _literal(kwargs.get("max_tokens"))
+            max_tokens = _output_token_limit(signature, kwargs)
             self.calls.append(
                 ApiCall(
-                    provider=provider,
+                    provider=CALL_SIGNATURES[signature],
                     file=self.filename,
                     line=node.lineno,
                     model=model if isinstance(model, str) else None,

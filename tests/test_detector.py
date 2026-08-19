@@ -40,6 +40,47 @@ def test_missing_max_tokens_is_none_not_zero():
     assert no_ceiling.max_tokens is None
 
 
+def test_responses_reads_max_output_tokens_without_missing_limit_finding():
+    source = """
+client.responses.create(
+    model="gpt-4o",
+    max_output_tokens=9999,
+)
+"""
+
+    call = detector.scan_source(source, "responses.py")[0]
+
+    assert call.max_tokens == 9999
+    assert all(finding.rule != "no-max-tokens" for finding in rules.check(call))
+
+
+def test_chat_completions_reads_max_completion_tokens():
+    source = """
+client.chat.completions.create(
+    model="gpt-4o",
+    max_completion_tokens=2048,
+)
+"""
+
+    call = detector.scan_source(source, "chat.py")[0]
+
+    assert call.max_tokens == 2048
+
+
+def test_dynamic_provider_specific_output_limit_remains_unknown():
+    source = """
+client.responses.create(
+    model="gpt-4o",
+    max_output_tokens=limit,
+)
+"""
+
+    call = detector.scan_source(source, "dynamic.py")[0]
+
+    assert call.max_tokens is None
+    assert any(finding.rule == "no-max-tokens" for finding in rules.check(call))
+
+
 def test_unparseable_source_is_skipped_not_fatal():
     assert detector.scan_source("def broken(:\n", "broken.py") == []
 
