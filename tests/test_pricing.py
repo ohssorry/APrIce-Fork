@@ -1,3 +1,4 @@
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -144,6 +145,55 @@ def test_future_verified_on_date_is_rejected():
         pricing._validate_entry(entry(verified_on="2999-01-01"), "test", Path("test.yaml"), set())
 
 
+def test_verified_on_dated_tomorrow_is_rejected():
+    # Boundary case: no forward grace, so even a date one day past UTC
+    # "today" must be caught as future -- see PR review on #12.
+    tomorrow = (dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=1)).isoformat()
+    with pytest.raises(pricing.PriceFileError, match="future"):
+        pricing._validate_entry(entry(verified_on=tomorrow), "test", Path("test.yaml"), set())
+
+
 def test_error_message_names_the_file_and_the_model():
     with pytest.raises(pricing.PriceFileError, match=r"bogus\.yaml.*test-model"):
         pricing._validate_entry(entry(input_per_mtok=-1.0), "test", Path("bogus.yaml"), set())
+
+
+# Integration tests for load_prices() itself: these exercise the real
+# file-loading path (not _validate_entry directly), so a YAML syntax error or
+# a document that isn't a mapping still surfaces as a PriceFileError naming
+# the offending file, rather than a bare yaml.YAMLError/AttributeError.
+
+
+def _reload_prices_from(monkeypatch, tmp_path):
+    monkeypatch.setattr(pricing, "PRICES_DIR", tmp_path)
+    pricing.load_prices.cache_clear()
+
+
+def test_load_prices_wraps_invalid_yaml_syntax(tmp_path, monkeypatch):
+    (tmp_path / "broken.yaml").write_text("provider: openai\nmodels: [\n")
+    _reload_prices_from(monkeypatch, tmp_path)
+    try:
+        with pytest.raises(pricing.PriceFileError, match="broken.yaml"):
+            pricing.load_prices()
+    finally:
+        pricing.load_prices.cache_clear()
+
+
+def test_load_prices_wraps_non_mapping_document(tmp_path, monkeypatch):
+    (tmp_path / "list.yaml").write_text("- just\n- a\n- list\n")
+    _reload_prices_from(monkeypatch, tmp_path)
+    try:
+        with pytest.raises(pricing.PriceFileError, match="list.yaml"):
+            pricing.load_prices()
+    finally:
+        pricing.load_prices.cache_clear()
+
+
+def test_load_prices_wraps_non_list_models_field(tmp_path, monkeypatch):
+    (tmp_path / "bad_models.yaml").write_text("provider: openai\nmodels: not-a-list\n")
+    _reload_prices_from(monkeypatch, tmp_path)
+    try:
+        with pytest.raises(pricing.PriceFileError, match="bad_models.yaml"):
+            pricing.load_prices()
+    finally:
+        pricing.load_prices.cache_clear()

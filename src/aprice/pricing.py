@@ -95,11 +95,11 @@ def _validate_entry(entry: dict, provider: str, path: Path, seen_ids: set[str]) 
             f"{path.name}: '{model_id}' has verified_on '{verified_on}' -- expected YYYY-MM-DD"
         )
 
-    # Compare against UTC "today" with a 1-day grace window: a contributor
-    # west of UTC can date-stamp verified_on with a local "today" that is
-    # still "tomorrow" in UTC, which is when CI actually runs the check.
+    # Compare against UTC "today". No forward grace: issue #12's acceptance
+    # criteria is catching future dates, and a date one day out is still a
+    # future date from CI's perspective, not a legitimate "just verified".
     utc_today = dt.datetime.now(dt.timezone.utc).date()
-    if verified_date > utc_today + dt.timedelta(days=1):
+    if verified_date > utc_today:
         raise PriceFileError(
             f"{path.name}: '{model_id}' has a future verified_on date '{verified_date}'"
         )
@@ -119,10 +119,23 @@ def load_prices() -> dict[tuple[str, str], Price]:
     """Load every provider YAML into a ``(provider, model) -> Price`` table."""
     table: dict[tuple[str, str], Price] = {}
     for path in sorted(PRICES_DIR.glob("*.yaml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise PriceFileError(f"{path.name}: invalid YAML -- {exc}") from exc
+        doc = doc or {}
+        if not isinstance(doc, dict):
+            raise PriceFileError(
+                f"{path.name}: top-level document must be a mapping, got {type(doc).__name__}"
+            )
         provider = doc.get("provider") or path.stem
         seen_ids: set[str] = set()
-        for entry in doc.get("models", []):
+        models = doc.get("models", [])
+        if not isinstance(models, list):
+            raise PriceFileError(
+                f"{path.name}: 'models' must be a list, got {type(models).__name__}"
+            )
+        for entry in models:
             price = _validate_entry(entry, provider, path, seen_ids)
             table[(provider, price.model)] = price
     return table
