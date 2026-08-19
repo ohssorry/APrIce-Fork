@@ -134,6 +134,58 @@ client.responses.create(
     assert any(finding.rule == "no-max-tokens" for finding in rules.check(call))
 
 
+def test_comments_and_strings_are_not_detected_as_calls():
+    source = '''
+# client.messages.create(model="comment", max_tokens=10)
+example = "client.responses.create(model='string', max_tokens=10)"
+"""client.models.generate_content(model='docstring')"""
+'''
+
+    assert detector.scan_source(source, "non_code.py") == []
+
+
+def test_bare_functions_with_endpoint_names_are_not_sdk_calls():
+    source = """
+def create():
+    return None
+
+def generate_content():
+    return None
+
+create()
+generate_content()
+"""
+
+    assert detector.scan_source(source, "same_names.py") == []
+
+
+def test_async_api_call_is_detected_inside_its_loop():
+    source = """
+async def summarize_all(documents):
+    async for document in documents:
+        await client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=128,
+            messages=[],
+        )
+"""
+
+    detected = detector.scan_source(source, "async_calls.py")
+
+    assert len(detected) == 1
+    assert detected[0].model == "claude-sonnet-5"
+    assert detected[0].loop_depth == 1
+
+
+def test_unknown_call_shape_produces_no_findings():
+    source = "service.generate(model='unknown', max_tokens=10)"
+
+    detected = detector.scan_source(source, "unknown_sdk.py")
+
+    assert detected == []
+    assert rules.check_all(detected) == []
+
+
 def test_unparseable_source_is_skipped_not_fatal():
     with pytest.warns(
         detector.ParseFailureWarning, match="Could not parse Python source"

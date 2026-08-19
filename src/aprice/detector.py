@@ -66,6 +66,10 @@ def _dotted_path(node: ast.AST) -> tuple[str, ...]:
 
 def _match_signature(path: tuple[str, ...]) -> tuple[str, ...] | None:
     for signature in CALL_SIGNATURES_LONGEST_FIRST:
+        # A bare local function can share an endpoint name. SDK calls always
+        # have a client or model object before a one-part signature.
+        if len(signature) == 1 and len(path) == 1:
+            continue
         if len(path) >= len(signature) and path[-len(signature) :] == signature:
             return signature
     return None
