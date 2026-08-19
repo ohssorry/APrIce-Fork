@@ -1,8 +1,15 @@
-"""Rendering a ScanResult as terminal text or as a PR comment."""
+"""Rendering a ScanResult as terminal text, a PR comment, or JSON."""
 
 from __future__ import annotations
 
-from .models import ScanResult
+import json
+
+from .models import ApiCall, ScanResult
+
+# Bump when the JSON shape changes so consumers (the diff command, CI
+# integrations) can detect a format they don't understand instead of
+# misparsing it.
+JSON_SCHEMA_VERSION = 1
 
 
 def _usd(amount: float) -> str:
@@ -94,3 +101,46 @@ def render_markdown(result: ScanResult, title: str = "APrIce cost report") -> st
         "See `docs/methodology.md`.</sub>"
     )
     return "\n".join(lines)
+
+
+def _call_dict(call: ApiCall) -> dict:
+    return {
+        "location": call.location,
+        "file": call.file.replace("\\", "/"),
+        "line": call.line,
+        "provider": call.provider,
+        "model": call.model,
+        "max_tokens": call.max_tokens,
+        "loop_depth": call.loop_depth,
+    }
+
+
+def render_json(result: ScanResult) -> str:
+    """Render a ScanResult as machine-readable JSON.
+
+    Cost is always a {low, high} pair, never collapsed to one number -- the
+    whole point of the range is that call volume isn't known. See
+    docs/methodology.md.
+    """
+    payload = {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "estimates": [
+            {
+                **_call_dict(est.call),
+                "cost_usd": {"low": est.low_usd, "high": est.high_usd},
+            }
+            for est in result.estimates
+        ],
+        "total_cost_usd": {"low": result.low_usd, "high": result.high_usd},
+        "unpriced": [_call_dict(call) for call in result.unpriced],
+        "findings": [
+            {
+                "location": finding.call.location,
+                "rule": finding.rule,
+                "severity": finding.severity,
+                "message": finding.message,
+            }
+            for finding in result.findings
+        ],
+    }
+    return json.dumps(payload, indent=2)
