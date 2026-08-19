@@ -62,3 +62,21 @@ def test_openai_prices_have_no_zero_placeholders():
             continue
         assert price.input_per_mtok > 0
         assert price.output_per_mtok > 0
+
+
+def test_google_model_resolves_to_a_price():
+    price = pricing.lookup("google", "gemini-2.5-flash")
+    assert price is not None
+    assert price.input_per_mtok == 0.30
+    assert price.output_per_mtok == 2.50
+
+
+def test_google_prices_have_no_zero_placeholders():
+    # B-02: unverified models must be left out of the file rather than
+    # kept with a 0.00 placeholder, so a priced Google model should never
+    # come back free.
+    for (provider, _model), price in pricing.load_prices().items():
+        if provider != "google":
+            continue
+        assert price.input_per_mtok > 0
+        assert price.output_per_mtok > 0
