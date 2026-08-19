@@ -64,7 +64,17 @@ def _match_key(call: ApiCall) -> MatchKey:
 
 
 def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    # Git for Windows emits UTF-8 paths even when Python inherits a legacy
+    # console encoding such as cp949. Decode explicitly so non-ASCII repo
+    # paths cannot make an otherwise successful command lose stdout.
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _repo_root() -> Path:

@@ -153,11 +153,21 @@ def test_diff_does_not_modify_the_working_tree(tmp_path, monkeypatch, capsys):
 
     assert before == after
     status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert "app.py" in status.stdout  # the uncommitted edit is still pending, not lost or committed
     worktrees = subprocess.run(
-        ["git", "worktree", "list"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "worktree", "list"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert worktrees.stdout.count("\n") == 1  # only the main worktree remains
 
@@ -170,6 +180,17 @@ def test_diff_text_format_shows_no_changes_between_identical_refs(tmp_path, monk
     out = capsys.readouterr().out
     assert code == 0
     assert "No API call changes detected" in out
+
+
+def test_diff_handles_non_ascii_repository_path(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "한글-저장소"
+    repo.mkdir()
+    _diff_repo(repo)
+    monkeypatch.chdir(repo)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD"])
+    capsys.readouterr()
+    assert code == 0
 
 
 def test_diff_unknown_ref_errors_with_clear_message_and_exit_code(tmp_path, monkeypatch, capsys):
