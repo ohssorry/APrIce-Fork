@@ -129,23 +129,36 @@ class _CallVisitor(ast.NodeVisitor):
         self._loop_depth = 0
         self._loop_bounds: list[int | None] = []
 
-    def _visit_loop(self, node: ast.AST, bound: int | None) -> None:
+    def _visit_repeated(self, nodes: list[ast.AST], bound: int | None) -> None:
         self._loop_depth += 1
         self._loop_bounds.append(bound)
         try:
-            self.generic_visit(node)
+            for node in nodes:
+                self.visit(node)
         finally:
             self._loop_bounds.pop()
             self._loop_depth -= 1
 
     def visit_For(self, node: ast.For) -> None:
-        self._visit_loop(node, _literal_range_bound(node.iter))
+        # Python evaluates the iterable once before entering the loop. The
+        # target and body repeat, while ``else`` runs once after exhaustion.
+        self.visit(node.iter)
+        self._visit_repeated([node.target, *node.body], _literal_range_bound(node.iter))
+        for statement in node.orelse:
+            self.visit(statement)
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        self._visit_loop(node, None)
+        self.visit(node.iter)
+        self._visit_repeated([node.target, *node.body], None)
+        for statement in node.orelse:
+            self.visit(statement)
 
     def visit_While(self, node: ast.While) -> None:
-        self._visit_loop(node, None)
+        # The condition is evaluated for every attempted iteration, so calls
+        # in it carry the same unknown bound as calls in the body.
+        self._visit_repeated([node.test, *node.body], None)
+        for statement in node.orelse:
+            self.visit(statement)
 
     def _visit_comprehension(
         self, generators: list[ast.comprehension], result_nodes: tuple[ast.AST, ...]
