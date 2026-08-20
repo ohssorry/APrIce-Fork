@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 
-from .diff import CallDiff, DiffResult
+from .diff import CallDiff, DiffResult, RiskFlag
 from .models import ApiCall, ScanResult
 
-# Bump when the JSON shape changes so consumers (the diff command, CI
-# integrations) can detect a format they don't understand instead of
-# misparsing it.
-JSON_SCHEMA_VERSION = 1
+# Bumped independently when either shape changes, so a consumer can detect a
+# format it doesn't understand instead of misparsing it. diff JSON carries
+# blocking_risks that scan JSON has no equivalent of, so the two versions
+# move separately rather than sharing one counter.
+SCAN_JSON_SCHEMA_VERSION = 1
+DIFF_JSON_SCHEMA_VERSION = 2
 
 
 def _usd(amount: float) -> str:
@@ -128,7 +130,7 @@ def render_json(result: ScanResult) -> str:
     docs/methodology.md.
     """
     payload = {
-        "schema_version": JSON_SCHEMA_VERSION,
+        "schema_version": SCAN_JSON_SCHEMA_VERSION,
         "estimates": [
             {
                 **_call_dict(est.call),
@@ -195,6 +197,12 @@ def render_diff_text(diff: DiffResult) -> str:
         f"\n  Net change per request: low {_signed_usd(diff.delta_low)}  "
         f"high {_signed_usd(diff.delta_high)}"
     )
+
+    if diff.blocking_risks:
+        lines.append(f"\n  ! {len(diff.blocking_risks)} new blocking risk(s):")
+        for risk in diff.blocking_risks:
+            lines.append(f"    [{risk.kind}] {risk.location}  {risk.message}")
+
     return "\n".join(lines)
 
 
@@ -218,6 +226,13 @@ def render_diff_markdown(diff: DiffResult) -> str:
         f"**Net change per request: low {_signed_usd(diff.delta_low)}, "
         f"high {_signed_usd(diff.delta_high)}**"
     )
+
+    if diff.blocking_risks:
+        lines.append("")
+        lines.append(f"### Blocking risks ({len(diff.blocking_risks)})")
+        for risk in diff.blocking_risks:
+            lines.append(f"- **`{risk.location}`** [{risk.kind}] {risk.message}")
+
     lines.append("")
     lines.append(
         "<sub>Per-request cost only -- call volume is not inferred from source. "
@@ -226,12 +241,16 @@ def render_diff_markdown(diff: DiffResult) -> str:
     return "\n".join(lines)
 
 
+def _risk_dict(risk: RiskFlag) -> dict:
+    return {"kind": risk.kind, "location": risk.location, "message": risk.message}
+
+
 def render_diff_json(diff: DiffResult) -> str:
     def cost_obj(cost: tuple[float, float] | None) -> dict | None:
         return {"low": cost[0], "high": cost[1]} if cost is not None else None
 
     payload = {
-        "schema_version": JSON_SCHEMA_VERSION,
+        "schema_version": DIFF_JSON_SCHEMA_VERSION,
         "base_ref": diff.base_ref,
         "head_ref": diff.head_ref,
         "entries": [
@@ -244,5 +263,6 @@ def render_diff_json(diff: DiffResult) -> str:
             for entry in diff.entries
         ],
         "total_delta_usd": {"low": diff.delta_low, "high": diff.delta_high},
+        "blocking_risks": [_risk_dict(risk) for risk in diff.blocking_risks],
     }
     return json.dumps(payload, indent=2)

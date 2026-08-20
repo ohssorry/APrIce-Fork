@@ -164,6 +164,7 @@ def diff_result_with_changes():
         base_high=0.02,
         head_low=0.0285,
         head_high=0.081,
+        blocking_risks=[],
     )
 
 
@@ -176,6 +177,7 @@ def empty_diff_result():
         base_high=0.0,
         head_low=0.0,
         head_high=0.0,
+        blocking_risks=[],
     )
 
 
@@ -206,12 +208,60 @@ def test_render_diff_markdown_includes_table_and_net_change():
 
 def test_render_diff_json_is_valid_and_keeps_range_not_a_point():
     payload = json.loads(report.render_diff_json(diff_result_with_changes()))
-    assert payload["schema_version"] == 1
+    # diff JSON versions independently from scan JSON (which stays at 1)
+    # because it carries blocking_risks, which scan JSON has no equivalent of.
+    assert payload["schema_version"] == 2
     assert payload["base_ref"] == "base"
     assert payload["head_ref"] == "HEAD"
     statuses = {e["status"] for e in payload["entries"]}
     assert statuses == {"added", "removed", "changed"}
     assert set(payload["total_delta_usd"]) == {"low", "high"}
+
+
+# -- diff: blocking risks --
+
+
+def diff_result_with_blocking_risk():
+    base = diff_result_with_changes()
+    risk = diff.RiskFlag(
+        kind="new-loop-call",
+        location="src/app.py:9",
+        message="New API call added inside a loop (depth 1).",
+    )
+    return diff.DiffResult(
+        base_ref=base.base_ref,
+        head_ref=base.head_ref,
+        entries=base.entries,
+        base_low=base.base_low,
+        base_high=base.base_high,
+        head_low=base.head_low,
+        head_high=base.head_high,
+        blocking_risks=[risk],
+    )
+
+
+def test_render_diff_text_lists_blocking_risks():
+    text = report.render_diff_text(diff_result_with_blocking_risk())
+    assert "1 new blocking risk" in text
+    assert "[new-loop-call] src/app.py:9" in text
+
+
+def test_render_diff_markdown_lists_blocking_risks():
+    md = report.render_diff_markdown(diff_result_with_blocking_risk())
+    assert "### Blocking risks (1)" in md
+    assert "src/app.py:9" in md
+
+
+def test_render_diff_json_includes_blocking_risks():
+    payload = json.loads(report.render_diff_json(diff_result_with_blocking_risk()))
+    [risk] = payload["blocking_risks"]
+    assert risk["kind"] == "new-loop-call"
+    assert risk["location"] == "src/app.py:9"
+
+
+def test_render_diff_json_blocking_risks_defaults_to_empty_list():
+    payload = json.loads(report.render_diff_json(diff_result_with_changes()))
+    assert payload["blocking_risks"] == []
 
 
 def test_render_diff_json_keeps_unpriced_entries_not_dropped():
@@ -234,6 +284,7 @@ def test_render_diff_json_keeps_unpriced_entries_not_dropped():
         base_high=0.0,
         head_low=0.0,
         head_high=0.0,
+        blocking_risks=[],
     )
     payload = json.loads(report.render_diff_json(result))
     [entry] = payload["entries"]

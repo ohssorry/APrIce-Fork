@@ -11,6 +11,7 @@ import dataclasses
 import shutil
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,22 @@ class CallDiff:
 
 
 @dataclass(frozen=True)
+class RiskFlag:
+    """A new-or-worsened structural risk this PR introduces.
+
+    Blocking, unlike everything in ``CallDiff.entries``: a cost increase, a
+    model swap, or a call that's simply unpriced are reported for a human to
+    read, not gated on -- only a *structural* regression (a call moves into
+    a loop, a loop gets deeper, a known retry bound becomes larger or
+    unknown, or a changed file stops parsing) is.
+    """
+
+    kind: str  # "new-loop-call" | "loop-depth-increased" | "loop-bound-worse" | "parse-failure"
+    location: str
+    message: str
+
+
+@dataclass(frozen=True)
 class DiffResult:
     base_ref: str
     head_ref: str
@@ -51,6 +68,7 @@ class DiffResult:
     base_high: float
     head_low: float
     head_high: float
+    blocking_risks: list[RiskFlag]
 
     @property
     def delta_low(self) -> float:
@@ -86,7 +104,9 @@ def _repo_root() -> Path:
     return Path(result.stdout.strip())
 
 
-def _scan_ref(repo_root: Path, ref: str, rel_path: Path, input_tokens: int) -> ScanResult:
+def _scan_ref(
+    repo_root: Path, ref: str, rel_path: Path, input_tokens: int
+) -> tuple[ScanResult, list[str]]:
     verify = _run_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_root)
     if verify.returncode != 0:
         raise GitRefError(f"unknown git ref: {ref}")
@@ -100,9 +120,19 @@ def _scan_ref(repo_root: Path, ref: str, rel_path: Path, input_tokens: int) -> S
 
         target = worktree / rel_path
         if not target.exists():
-            return ScanResult()
+            return ScanResult(), []
 
-        calls = detector.scan_path(target)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", detector.ParseFailureWarning)
+            calls = detector.scan_path(target)
+            parse_failures = sorted(
+                {
+                    str(Path(w.filename).relative_to(worktree))
+                    for w in caught
+                    if issubclass(w.category, detector.ParseFailureWarning)
+                }
+            )
+
         # Rewrite paths relative to the worktree root (not the throwaway temp
         # dir), so the same call gets the same match key on both sides.
         calls = [
@@ -125,10 +155,20 @@ def _scan_ref(repo_root: Path, ref: str, rel_path: Path, input_tokens: int) -> S
                 else:
                     result.estimates.append(estimate)
             result.findings = rules.check_all(calls)
-            return result
+            return result, parse_failures
     finally:
         _run_git(["worktree", "remove", "--force", str(worktree)], cwd=repo_root)
         shutil.rmtree(tmp_parent, ignore_errors=True)
+
+
+def _changed_python_files(repo_root: Path, base: str, head: str) -> set[str]:
+    result = _run_git(
+        ["diff", "--no-renames", "--name-only", f"{base}...{head}", "--", "*.py"],
+        cwd=repo_root,
+    )
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 @contextmanager
@@ -158,6 +198,55 @@ def _index(result: ScanResult) -> _KeyIndex:
     return index
 
 
+def _bound_worse(base_bounds: tuple[int | None, ...], head_bounds: tuple[int | None, ...]) -> bool:
+    # Outer-to-inner, matching ApiCall.loop_bounds (see #24). A known bound
+    # becoming unknown, or growing, is worse; a bound shrinking or a loop
+    # being removed entirely is not -- and isn't flagged.
+    for base_bound, head_bound in zip(base_bounds, head_bounds, strict=False):
+        if base_bound is not None and head_bound is None:
+            return True
+        if base_bound is not None and head_bound is not None and head_bound > base_bound:
+            return True
+    return len(head_bounds) > len(base_bounds)
+
+
+def _structural_risks(entries: list[CallDiff]) -> list[RiskFlag]:
+    risks: list[RiskFlag] = []
+    for entry in entries:
+        if entry.status == "added" and entry.head is not None and entry.head.loop_depth >= 1:
+            risks.append(
+                RiskFlag(
+                    kind="new-loop-call",
+                    location=entry.head.location,
+                    message=(f"New API call added inside a loop (depth {entry.head.loop_depth})."),
+                )
+            )
+        elif entry.status == "changed" and entry.base is not None and entry.head is not None:
+            if entry.head.loop_depth > entry.base.loop_depth:
+                risks.append(
+                    RiskFlag(
+                        kind="loop-depth-increased",
+                        location=entry.head.location,
+                        message=(
+                            f"Loop depth increased from {entry.base.loop_depth} "
+                            f"to {entry.head.loop_depth}."
+                        ),
+                    )
+                )
+            if _bound_worse(entry.base.loop_bounds, entry.head.loop_bounds):
+                risks.append(
+                    RiskFlag(
+                        kind="loop-bound-worse",
+                        location=entry.head.location,
+                        message=(
+                            f"Static iteration bound went from {entry.base.loop_bounds or '()'} "
+                            f"to {entry.head.loop_bounds or '()'} -- larger, or no longer known."
+                        ),
+                    )
+                )
+    return risks
+
+
 def compare(path: Path, base: str, head: str, input_tokens: int) -> DiffResult:
     """Scan ``base`` and ``head`` and report how per-request cost changed.
 
@@ -170,8 +259,8 @@ def compare(path: Path, base: str, head: str, input_tokens: int) -> DiffResult:
     except ValueError as exc:
         raise GitRefError(f"{path} is not inside the git repository at {repo_root}") from exc
 
-    base_result = _scan_ref(repo_root, base, rel_path, input_tokens)
-    head_result = _scan_ref(repo_root, head, rel_path, input_tokens)
+    base_result, _base_parse_failures = _scan_ref(repo_root, base, rel_path, input_tokens)
+    head_result, head_parse_failures = _scan_ref(repo_root, head, rel_path, input_tokens)
 
     base_by_key = _index(base_result)
     head_by_key = _index(head_result)
@@ -200,6 +289,19 @@ def compare(path: Path, base: str, head: str, input_tokens: int) -> DiffResult:
         for h_call, h_cost in head_items[len(base_items) :]:
             entries.append(CallDiff(key, "added", None, h_call, None, h_cost))
 
+    blocking_risks = _structural_risks(entries)
+
+    changed_files = _changed_python_files(repo_root, base, head)
+    for path_str in head_parse_failures:
+        if path_str in changed_files:
+            blocking_risks.append(
+                RiskFlag(
+                    kind="parse-failure",
+                    location=path_str,
+                    message=f"{path_str} changed in this PR but does not parse on {head}.",
+                )
+            )
+
     return DiffResult(
         base_ref=base,
         head_ref=head,
@@ -208,4 +310,5 @@ def compare(path: Path, base: str, head: str, input_tokens: int) -> DiffResult:
         base_high=base_result.high_usd,
         head_low=head_result.low_usd,
         head_high=head_result.high_usd,
+        blocking_risks=blocking_risks,
     )
