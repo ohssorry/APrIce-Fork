@@ -42,6 +42,26 @@ def test_unpriceable_call_returns_none_rather_than_guessing():
     assert pricing.estimate(call(model=None)) is None
 
 
+def test_negative_input_tokens_is_rejected():
+    with pytest.raises(ValueError, match="input_tokens must be >= 0"):
+        pricing.estimate(call(), input_tokens=-1)
+
+
+def test_negative_input_tokens_is_rejected_even_for_an_unpriced_model():
+    # A bad input_tokens is invalid regardless of whether the model would
+    # have been priceable -- it must not be masked by the None-for-unknown
+    # path returning quietly instead.
+    with pytest.raises(ValueError, match="input_tokens must be >= 0"):
+        pricing.estimate(call(model=None), input_tokens=-1)
+
+
+def test_zero_input_tokens_is_a_valid_estimate():
+    est = pricing.estimate(call(), input_tokens=0)
+    assert est is not None
+    assert est.low_usd >= 0
+    assert est.high_usd >= 0
+
+
 def test_every_price_entry_is_wellformed():
     for (provider, model), price in pricing.load_prices().items():
         assert provider and model

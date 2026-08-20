@@ -152,7 +152,14 @@ def estimate(call: ApiCall, input_tokens: int = DEFAULT_INPUT_TOKENS) -> CostEst
 
     Returns None when the model is unknown -- an unpriced call is reported
     separately rather than guessed at.
+
+    Raises ValueError for a negative input_tokens: it is a user-supplied
+    assumption (see DEFAULT_INPUT_TOKENS), not a derived value, so a negative
+    one is invalid input rather than something to price as-is.
     """
+    if input_tokens < 0:
+        raise ValueError(f"input_tokens must be >= 0, got {input_tokens}")
+
     price = lookup(call.provider, call.model)
     if price is None:
         return None
