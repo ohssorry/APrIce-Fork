@@ -103,31 +103,62 @@ def _output_token_limit(signature: tuple[str, ...], kwargs: dict[str, ast.AST]) 
     return None
 
 
+def _literal_range_bound(iterable: ast.AST) -> int | None:
+    """Return an exact iteration count for a literal built-in range call."""
+    if not isinstance(iterable, ast.Call):
+        return None
+    if _dotted_path(iterable.func) != ("range",) or iterable.keywords:
+        return None
+    if not 1 <= len(iterable.args) <= 3:
+        return None
+
+    values = [_literal(argument) for argument in iterable.args]
+    if any(type(value) is not int for value in values):
+        return None
+
+    try:
+        return len(range(*values))
+    except (OverflowError, ValueError):
+        return None
+
+
 class _CallVisitor(ast.NodeVisitor):
     def __init__(self, filename: str) -> None:
         self.filename = filename
         self.calls: list[ApiCall] = []
         self._loop_depth = 0
+        self._loop_bounds: list[int | None] = []
 
-    def _visit_loop(self, node: ast.AST) -> None:
+    def _visit_loop(self, node: ast.AST, bound: int | None) -> None:
         self._loop_depth += 1
-        self.generic_visit(node)
-        self._loop_depth -= 1
+        self._loop_bounds.append(bound)
+        try:
+            self.generic_visit(node)
+        finally:
+            self._loop_bounds.pop()
+            self._loop_depth -= 1
 
-    visit_For = _visit_loop
-    visit_AsyncFor = _visit_loop
-    visit_While = _visit_loop
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_loop(node, _literal_range_bound(node.iter))
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_loop(node, None)
+
+    def visit_While(self, node: ast.While) -> None:
+        self._visit_loop(node, None)
 
     def _visit_comprehension(
         self, generators: list[ast.comprehension], result_nodes: tuple[ast.AST, ...]
     ) -> None:
         starting_depth = self._loop_depth
+        starting_bounds = len(self._loop_bounds)
         try:
             for generator in generators:
                 # The first iterable is evaluated before its loop starts. Each
                 # later iterable is evaluated inside all preceding loops.
                 self.visit(generator.iter)
                 self._loop_depth += 1
+                self._loop_bounds.append(_literal_range_bound(generator.iter))
                 self.visit(generator.target)
                 for condition in generator.ifs:
                     self.visit(condition)
@@ -135,6 +166,7 @@ class _CallVisitor(ast.NodeVisitor):
                 self.visit(result_node)
         finally:
             self._loop_depth = starting_depth
+            del self._loop_bounds[starting_bounds:]
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node.generators, (node.elt,))
@@ -162,6 +194,7 @@ class _CallVisitor(ast.NodeVisitor):
                     model=model if isinstance(model, str) else None,
                     max_tokens=max_tokens if isinstance(max_tokens, int) else None,
                     loop_depth=self._loop_depth,
+                    loop_bounds=tuple(self._loop_bounds),
                 )
             )
         self.generic_visit(node)

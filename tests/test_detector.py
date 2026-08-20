@@ -55,6 +55,73 @@ def test_detects_loop_nesting_depth():
     assert depths == [0, 0, 0, 1, 2]
 
 
+@pytest.mark.parametrize(
+    ("range_args", "expected_bound"),
+    [("5", 5), ("2, 8, 2", 3), ("5, 0, -1", 5), ("-3", 0)],
+)
+def test_literal_range_records_exact_iteration_bound(range_args, expected_bound):
+    source = f"""
+for item in range({range_args}):
+    client.responses.create(model="gpt-4o", max_output_tokens=10)
+"""
+
+    call = detector.scan_source(source, "literal_range.py")[0]
+    loop_findings = [
+        finding for finding in rules.check(call) if finding.rule.startswith("call-in-")
+    ]
+
+    assert call.loop_depth == 1
+    assert call.loop_bounds == (expected_bound,)
+    assert len(loop_findings) == 1
+    assert f"upper bound of {expected_bound} iterations" in loop_findings[0].message
+
+
+@pytest.mark.parametrize("loop_header", ["for item in range(limit):", "while enabled:"])
+def test_unknown_loop_bound_is_not_guessed(loop_header):
+    source = f"""
+{loop_header}
+    client.responses.create(model="gpt-4o", max_output_tokens=10)
+"""
+
+    call = detector.scan_source(source, "unknown_bound.py")[0]
+    loop_finding = next(finding for finding in rules.check(call) if finding.rule == "call-in-loop")
+
+    assert call.loop_bounds == (None,)
+    assert "static upper bound" not in loop_finding.message
+    assert "which this tool cannot see" in loop_finding.message
+
+
+def test_nested_loop_bounds_preserve_outer_to_inner_order_without_multiplying():
+    source = """
+for outer in range(2):
+    for inner in range(limit):
+        client.responses.create(model="gpt-4o", max_output_tokens=10)
+"""
+
+    call = detector.scan_source(source, "nested_bounds.py")[0]
+    loop_findings = [
+        finding for finding in rules.check(call) if finding.rule.startswith("call-in-")
+    ]
+
+    assert call.loop_bounds == (2, None)
+    assert len(loop_findings) == 1
+    assert "iteration bounds [2, unknown]" in loop_findings[0].message
+
+
+def test_comprehension_records_literal_range_bound():
+    source = """
+[
+    client.responses.create(model="gpt-4o", max_output_tokens=10)
+    for item in range(4)
+]
+"""
+
+    call = detector.scan_source(source, "bounded_comprehension.py")[0]
+
+    assert call.loop_depth == 1
+    assert call.loop_bounds == (4,)
+
+
 def test_comprehension_iterable_is_evaluated_before_loop():
     source = """
 [
