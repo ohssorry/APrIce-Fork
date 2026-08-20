@@ -20,6 +20,7 @@ class ApiCall:
     model: str | None = None
     max_tokens: int | None = None
     loop_depth: int = 0
+    loop_bounds: tuple[int | None, ...] = ()
 
     @property
     def location(self) -> str:

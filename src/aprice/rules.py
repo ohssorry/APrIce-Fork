@@ -18,26 +18,44 @@ def check(call: ApiCall) -> list[Finding]:
     findings: list[Finding] = []
 
     if call.loop_depth == 1:
+        bound = call.loop_bounds[0] if len(call.loop_bounds) == 1 else None
+        if bound is None:
+            message = (
+                "API call inside a loop: cost scales with the number of "
+                "iterations, which this tool cannot see."
+            )
+        else:
+            message = (
+                f"API call inside a loop with a static upper bound of {bound} "
+                "iterations: cost can scale up to that bound."
+            )
         findings.append(
             Finding(
                 call=call,
                 rule="call-in-loop",
                 severity="warn",
-                message=(
-                    "API call inside a loop: cost scales with the number of "
-                    "iterations, which this tool cannot see."
-                ),
+                message=message,
             )
         )
     elif call.loop_depth >= 2:
+        if len(call.loop_bounds) == call.loop_depth and any(
+            bound is not None for bound in call.loop_bounds
+        ):
+            bounds = ", ".join(
+                "unknown" if bound is None else str(bound) for bound in call.loop_bounds
+            )
+            message = (
+                f"API call nested {call.loop_depth} loops deep with iteration bounds "
+                f"[{bounds}]: cost can scale multiplicatively."
+            )
+        else:
+            message = f"API call nested {call.loop_depth} loops deep: cost scales multiplicatively."
         findings.append(
             Finding(
                 call=call,
                 rule="call-in-nested-loop",
                 severity="warn",
-                message=(
-                    f"API call nested {call.loop_depth} loops deep: cost scales multiplicatively."
-                ),
+                message=message,
             )
         )
 
