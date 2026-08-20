@@ -209,3 +209,122 @@ def test_diff_outside_a_git_repo_errors_with_exit_code(tmp_path, monkeypatch, ca
     err = capsys.readouterr().err
     assert code == 2
     assert "git repository" in err
+
+
+def test_diff_detects_a_retry_bound_change_with_no_other_change(tmp_path, monkeypatch, capsys):
+    # Same call site, same model, same max_tokens -- only the literal retry
+    # count changes. This must still show up, since retry-loop bound is what
+    # #24/#31 added the loop_bounds contract for.
+    _git(["init", "-q"], tmp_path)
+    _git(["config", "user.email", "test@example.com"], tmp_path)
+    _git(["config", "user.name", "Test"], tmp_path)
+
+    call_site = (
+        "import anthropic\n"
+        "client = anthropic.Anthropic()\n"
+        "for attempt in range({n}):\n"
+        "    client.messages.create(model='claude-sonnet-5', max_tokens=1000, messages=[])\n"
+    )
+    (tmp_path / "app.py").write_text(call_site.format(n=2))
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "base"], tmp_path)
+    _git(["branch", "base"], tmp_path)
+
+    (tmp_path / "app.py").write_text(call_site.format(n=5))
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "head"], tmp_path)
+
+    monkeypatch.chdir(tmp_path)
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+
+    [entry] = payload["entries"]
+    assert entry["status"] == "changed"
+    assert entry["loop_bounds"] == [5]
+
+
+# -- diff: prices can change between refs too --
+
+_PRICE_YAML = """\
+provider: anthropic
+currency: USD
+models:
+  - id: test-diff-model
+    input_per_mtok: {input_price}
+    output_per_mtok: {output_price}
+    verified_on: 2026-08-19
+"""
+
+
+def _price_diff_repo(tmp_path: Path, base_price: float, head_price: float) -> Path:
+    """Same call site in base and head; only the price table changes --
+    the scenario a B price-update PR creates."""
+    _git(["init", "-q"], tmp_path)
+    _git(["config", "user.email", "test@example.com"], tmp_path)
+    _git(["config", "user.name", "Test"], tmp_path)
+
+    prices_dir = tmp_path / "src" / "aprice" / "prices"
+    prices_dir.mkdir(parents=True)
+    (tmp_path / "app.py").write_text(
+        "import anthropic\n"
+        "client = anthropic.Anthropic()\n"
+        "client.messages.create(model='test-diff-model', max_tokens=1000, messages=[])\n"
+    )
+
+    (prices_dir / "anthropic.yaml").write_text(
+        _PRICE_YAML.format(input_price=base_price, output_price=base_price * 5)
+    )
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "base"], tmp_path)
+    _git(["branch", "base"], tmp_path)
+
+    (prices_dir / "anthropic.yaml").write_text(
+        _PRICE_YAML.format(input_price=head_price, output_price=head_price * 5)
+    )
+    _git(["add", "-A"], tmp_path)
+    # --allow-empty: when base_price == head_price this commit has no actual
+    # diff, but we still need a distinct HEAD to compare against base.
+    _git(["commit", "-q", "--allow-empty", "-m", "price update"], tmp_path)
+
+    return tmp_path
+
+
+def test_diff_detects_a_price_table_change_with_no_code_change(tmp_path, monkeypatch, capsys):
+    _price_diff_repo(tmp_path, base_price=3.0, head_price=30.0)
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+
+    assert payload["entries"], "a price-only change must not be reported as no change"
+    [entry] = payload["entries"]
+    assert entry["status"] == "changed"
+    assert entry["base_cost_usd"]["low"] < entry["head_cost_usd"]["low"]
+    assert payload["total_delta_usd"]["low"] > 0
+    assert payload["total_delta_usd"]["high"] > 0
+
+
+def test_diff_shows_no_change_when_price_is_identical_on_both_refs(tmp_path, monkeypatch, capsys):
+    _price_diff_repo(tmp_path, base_price=3.0, head_price=3.0)
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["entries"] == []
+
+
+def test_diff_restores_the_installed_price_directory_afterward(tmp_path, monkeypatch, capsys):
+    from aprice import pricing
+
+    _diff_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    original_dir = pricing.PRICES_DIR
+
+    cli.main(["diff", "--base", "base", "--head", "HEAD"])
+    capsys.readouterr()
+
+    assert pricing.PRICES_DIR == original_dir
+    assert pricing.lookup("anthropic", "claude-sonnet-5") is not None

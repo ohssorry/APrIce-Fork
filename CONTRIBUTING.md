@@ -39,8 +39,8 @@ found. Both are small — open an issue if you want a hand.
 ## 2. Code contributions
 
 ```console
-git clone https://github.com/APrIce-dev/aprice
-cd aprice
+git clone https://github.com/ohssorry/APrIce.git
+cd APrIce
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest

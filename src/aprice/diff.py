@@ -11,6 +11,8 @@ import dataclasses
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -108,18 +110,39 @@ def _scan_ref(repo_root: Path, ref: str, rel_path: Path, input_tokens: int) -> S
             for call in calls
         ]
 
-        result = ScanResult(calls=calls)
-        for call in calls:
-            estimate = pricing.estimate(call, input_tokens=input_tokens)
-            if estimate is None:
-                result.unpriced.append(call)
-            else:
-                result.estimates.append(estimate)
-        result.findings = rules.check_all(calls)
-        return result
+        # A price-table change (B updating prices/*.yaml) is a normal part of
+        # this repo's history, and it changes cost per request just as much
+        # as a code change does. pricing.load_prices() is cached and reads
+        # from the installed package's own prices/ directory by default, so
+        # without this swap both scans would silently reuse whatever prices
+        # happen to be on disk right now instead of each ref's own prices.
+        with _prices_from(worktree):
+            result = ScanResult(calls=calls)
+            for call in calls:
+                estimate = pricing.estimate(call, input_tokens=input_tokens)
+                if estimate is None:
+                    result.unpriced.append(call)
+                else:
+                    result.estimates.append(estimate)
+            result.findings = rules.check_all(calls)
+            return result
     finally:
         _run_git(["worktree", "remove", "--force", str(worktree)], cwd=repo_root)
         shutil.rmtree(tmp_parent, ignore_errors=True)
+
+
+@contextmanager
+def _prices_from(worktree: Path) -> Iterator[None]:
+    prices_dir = worktree / "src" / "aprice" / "prices"
+    original = pricing.PRICES_DIR
+    if prices_dir.is_dir():
+        pricing.PRICES_DIR = prices_dir
+    pricing.load_prices.cache_clear()
+    try:
+        yield
+    finally:
+        pricing.PRICES_DIR = original
+        pricing.load_prices.cache_clear()
 
 
 _Cost = tuple[float, float] | None
@@ -165,7 +188,12 @@ def compare(path: Path, base: str, head: str, input_tokens: int) -> DiffResult:
         # same model). Pair them up positionally rather than dropping
         # duplicates, and treat any leftover on either side as added/removed.
         for (b_call, b_cost), (h_call, h_cost) in zip(base_items, head_items, strict=False):
-            if b_call.max_tokens != h_call.max_tokens or b_call.loop_depth != h_call.loop_depth:
+            if (
+                b_call.max_tokens != h_call.max_tokens
+                or b_call.loop_depth != h_call.loop_depth
+                or b_call.loop_bounds != h_call.loop_bounds
+                or b_cost != h_cost
+            ):
                 entries.append(CallDiff(key, "changed", b_call, h_call, b_cost, h_cost))
         for b_call, b_cost in base_items[len(head_items) :]:
             entries.append(CallDiff(key, "removed", b_call, None, b_cost, None))

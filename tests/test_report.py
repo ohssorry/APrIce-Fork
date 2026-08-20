@@ -4,7 +4,7 @@ from aprice import diff, report
 from aprice.models import ApiCall, CostEstimate, Finding, Price, ScanResult
 
 
-def call(model="claude-sonnet-5", max_tokens=1000, loop_depth=0, line=16):
+def call(model="claude-sonnet-5", max_tokens=1000, loop_depth=0, line=16, loop_bounds=()):
     return ApiCall(
         provider="anthropic",
         file="src/app.py",
@@ -12,6 +12,7 @@ def call(model="claude-sonnet-5", max_tokens=1000, loop_depth=0, line=16):
         model=model,
         max_tokens=max_tokens,
         loop_depth=loop_depth,
+        loop_bounds=loop_bounds,
     )
 
 
@@ -88,6 +89,22 @@ def test_render_json_includes_call_fields_and_cost_range():
     assert entry["loop_depth"] == 1
     # A range, not a single collapsed number.
     assert entry["cost_usd"] == {"low": 0.0078, "high": 0.018}
+
+
+def test_render_json_includes_loop_bounds_outer_to_inner_with_null_for_unknown():
+    priced = call(loop_depth=2, loop_bounds=(5, None))
+    estimate = CostEstimate(call=priced, price=price(), low_usd=0.01, high_usd=0.02)
+    result = ScanResult(calls=[priced], estimates=[estimate])
+
+    payload = json.loads(report.render_json(result))
+    [entry] = payload["estimates"]
+    assert entry["loop_bounds"] == [5, None]
+
+
+def test_render_json_loop_bounds_defaults_to_empty_list():
+    payload = json.loads(report.render_json(result_with_calls()))
+    [entry] = payload["estimates"]
+    assert entry["loop_bounds"] == []
 
 
 def test_render_json_includes_findings_and_unpriced():
