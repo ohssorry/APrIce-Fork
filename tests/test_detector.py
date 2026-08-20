@@ -139,6 +139,57 @@ def test_comprehension_iterable_is_evaluated_before_loop():
     assert not any(f.rule == "call-in-loop" for f in rules.check(detected["iterable"]))
 
 
+def test_for_iterable_and_else_are_evaluated_outside_loop():
+    source = """
+for item in client.responses.create(model="iterable", max_output_tokens=10):
+    client.responses.create(model="body", max_output_tokens=10)
+else:
+    client.responses.create(model="else", max_output_tokens=10)
+"""
+
+    detected = {call.model: call for call in detector.scan_source(source, "for_flow.py")}
+
+    assert detected["iterable"].loop_depth == 0
+    assert detected["iterable"].loop_bounds == ()
+    assert detected["body"].loop_depth == 1
+    assert detected["body"].loop_bounds == (None,)
+    assert detected["else"].loop_depth == 0
+    assert detected["else"].loop_bounds == ()
+
+
+def test_async_for_iterable_and_else_are_evaluated_outside_loop():
+    source = """
+async def consume():
+    async for item in client.responses.create(model="iterable", max_output_tokens=10):
+        await client.responses.create(model="body", max_output_tokens=10)
+    else:
+        await client.responses.create(model="else", max_output_tokens=10)
+"""
+
+    detected = {call.model: call for call in detector.scan_source(source, "async_for_flow.py")}
+
+    assert detected["iterable"].loop_depth == 0
+    assert detected["body"].loop_depth == 1
+    assert detected["else"].loop_depth == 0
+
+
+def test_while_condition_repeats_but_else_is_outside_loop():
+    source = """
+while client.responses.create(model="condition", max_output_tokens=10):
+    client.responses.create(model="body", max_output_tokens=10)
+else:
+    client.responses.create(model="else", max_output_tokens=10)
+"""
+
+    detected = {call.model: call for call in detector.scan_source(source, "while_flow.py")}
+
+    assert detected["condition"].loop_depth == 1
+    assert detected["condition"].loop_bounds == (None,)
+    assert detected["body"].loop_depth == 1
+    assert detected["else"].loop_depth == 0
+    assert detected["else"].loop_bounds == ()
+
+
 def test_comprehension_generators_increase_depth_in_evaluation_order():
     source = """
 [
