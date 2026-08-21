@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
+[project.scripts]
+aprice-advisor = "aprice_advisor.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/aprice_advisor"]
 
