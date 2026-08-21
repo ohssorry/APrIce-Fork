@@ -69,6 +69,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
     if not args.path.exists():
         print(f"aprice-advisor: no such file: {args.path}", file=sys.stderr)
         return 2
+    if not args.path.is_file():
+        print(f"aprice-advisor: not a file: {args.path}", file=sys.stderr)
+        return 2
 
     callsites: dict = {}
     if args.callsites is not None:
@@ -78,7 +81,15 @@ def _run_analyze(args: argparse.Namespace) -> int:
             print(f"aprice-advisor: {exc}", file=sys.stderr)
             return 2
 
-    load_result = load_jsonl(args.path)
+    # is_file() above already rules out the common case (a directory), but
+    # the path can still change between that check and here, or fail to
+    # open for another OS-level reason (permissions, ...) -- surface that
+    # as the same clean exit-code-2 error rather than a bare traceback.
+    try:
+        load_result = load_jsonl(args.path)
+    except OSError as exc:
+        print(f"aprice-advisor: could not read {args.path}: {exc}", file=sys.stderr)
+        return 2
     events = load_result.events
 
     result = AnalysisResult(

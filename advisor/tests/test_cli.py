@@ -46,6 +46,19 @@ def test_analyze_missing_file_exits_2(tmp_path, capsys):
     assert "no such file" in err
 
 
+def test_analyze_a_directory_exits_2_instead_of_raising(tmp_path, capsys):
+    # Found in review on #62 (9ga0): args.path.exists() alone is true for a
+    # directory too, and load_jsonl()'s Path.open() would raise
+    # IsADirectoryError uncaught -- a bare traceback, not the documented
+    # exit code 2 for an input/execution error.
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+    code = cli.main(["analyze", str(directory)])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "not a file" in err
+
+
 def test_analyze_markdown_runs_clean(tmp_path, capsys):
     path = write_jsonl(tmp_path, event())
     code = cli.main(["analyze", str(path)])
