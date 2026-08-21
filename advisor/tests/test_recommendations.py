@@ -116,6 +116,30 @@ def test_direct_source_takes_precedence_over_callsite_mapping():
     assert result[0].source == direct
 
 
+def test_conflicting_direct_sources_are_not_replaced_by_callsite_mapping():
+    result = build_recommendations(
+        [
+            event(
+                "req-1",
+                callsite_id="site-a",
+                cache_eligible=True,
+                cache_status="miss",
+                source=Source(file="src/first.py", line=8),
+            ),
+            event(
+                "req-2",
+                callsite_id="site-a",
+                cache_eligible=True,
+                cache_status="miss",
+                source=Source(file="src/second.py", line=9),
+            ),
+        ],
+        callsites={"site-a": Source(file="src/mapped.py", line=99)},
+    )
+
+    assert result[0].source is None
+
+
 def test_empty_events_produce_no_recommendations():
     assert build_recommendations([]) == []
 

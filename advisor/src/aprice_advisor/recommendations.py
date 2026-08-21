@@ -126,6 +126,10 @@ def _resolve_source(
     }
     if len(matching_sources) == 1:
         return next(iter(matching_sources))
+    if matching_sources:
+        # Conflicting locations in the observed log are stronger evidence of
+        # ambiguity than a separate mapping is of either location being right.
+        return None
 
     if evidence.callsite_id is not None:
         return callsites.get(evidence.callsite_id)
