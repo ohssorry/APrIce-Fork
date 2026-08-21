@@ -126,6 +126,56 @@ def test_fail_on_warning_is_zero_without_warnings(tmp_path, capsys):
     assert code == 0
 
 
+# -- --input-tokens validation (scan and diff share the same rule) --
+
+
+def test_scan_rejects_negative_input_tokens(capsys):
+    code = cli.main(["scan", str(FIXTURE), "--input-tokens", "-1000000"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "--input-tokens must be >= 0" in err
+
+
+def test_scan_allows_zero_input_tokens(capsys):
+    code = cli.main(["scan", str(FIXTURE), "--input-tokens", "0", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["total_cost_usd"]["low"] >= 0
+    assert payload["total_cost_usd"]["high"] >= 0
+
+
+def test_diff_rejects_negative_input_tokens(tmp_path, monkeypatch, capsys):
+    _diff_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--input-tokens", "-1000000"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "--input-tokens must be >= 0" in err
+
+
+def test_diff_allows_zero_input_tokens(tmp_path, monkeypatch, capsys):
+    _diff_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--input-tokens", "0", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert set(payload["total_delta_usd"]) == {"low", "high"}
+
+
+def test_negative_input_tokens_is_rejected_before_touching_git(tmp_path, monkeypatch, capsys):
+    # Not a git repo at all -- if input validation ran after diff.compare(),
+    # this would report "not a git repository" instead of the real problem.
+    monkeypatch.chdir(tmp_path)
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--input-tokens", "-1"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "--input-tokens must be >= 0" in err
+
+
 # -- diff --
 
 
