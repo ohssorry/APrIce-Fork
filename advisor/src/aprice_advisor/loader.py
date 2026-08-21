@@ -52,11 +52,26 @@ def load_jsonl(path: Path) -> LoadResult:
             seen_ids[parsed.request_id] = line_no
             accepted.append((line_no, parsed))
 
-    kept = _drop_broken_retry_references(accepted, errors)
-    kept = _drop_retry_cycles(kept, errors)
+    kept = _resolve_retry_of(accepted, errors)
 
     errors.sort(key=lambda e: e.line)
     return LoadResult(events=[event for _, event in kept], errors=errors)
+
+
+def _resolve_retry_of(
+    accepted: list[tuple[int, Event]], errors: list[LoadError]
+) -> list[tuple[int, Event]]:
+    # Removing a cycle can leave a *non*-cyclic event dangling (A -> B where
+    # B<->C is a cycle: B and C drop, and now A points at nothing). Iterate
+    # both passes to a fixed point rather than once, so a chain leading into
+    # a cycle is fully unwound instead of leaving a dangling survivor.
+    kept = accepted
+    while True:
+        before = len(kept)
+        kept = _drop_broken_retry_references(kept, errors)
+        kept = _drop_retry_cycles(kept, errors)
+        if len(kept) == before:
+            return kept
 
 
 def _drop_broken_retry_references(

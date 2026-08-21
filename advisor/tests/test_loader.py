@@ -221,6 +221,39 @@ def test_a_retry_chain_that_terminates_is_not_a_cycle(tmp_path):
     assert result.errors == []
 
 
+def test_an_event_pointing_into_a_cycle_is_dropped_not_left_dangling(tmp_path):
+    # A -> B, and B <-> C is a cycle. B and C drop as cycle members; A must
+    # also drop, since its retry_of would otherwise dangle -- found in
+    # review on #55 (eunji719).
+    result = load_jsonl(
+        write(
+            tmp_path,
+            row(request_id="req-a", retry_of="req-b"),
+            row(request_id="req-b", retry_of="req-c"),
+            row(request_id="req-c", retry_of="req-b"),
+        )
+    )
+    assert result.events == []
+    reasons = {e.reason for e in result.errors}
+    assert any("cycle" in r for r in reasons)
+    assert any("retry_of references unknown request_id" in r for r in reasons)
+
+
+def test_a_longer_chain_into_a_cycle_is_fully_unwound(tmp_path):
+    # req-1 -> req-2 -> req-3 <-> req-4 (cycle). Every node in the chain
+    # must eventually drop, not just the immediate neighbor of the cycle.
+    result = load_jsonl(
+        write(
+            tmp_path,
+            row(request_id="req-1", retry_of="req-2"),
+            row(request_id="req-2", retry_of="req-3"),
+            row(request_id="req-3", retry_of="req-4"),
+            row(request_id="req-4", retry_of="req-3"),
+        )
+    )
+    assert result.events == []
+
+
 # -- optional field type validation --
 
 
