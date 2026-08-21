@@ -170,7 +170,31 @@ ROWS = [
         "output_tokens": 50,
         "status": "success",
     },
+    {  # a second project -- must stay a separate aggregate group, not merged
+        # into proj-a's
+        "schema_version": 1,
+        "timestamp": "2026-08-21T12:00:11Z",
+        "project_id": "proj-b",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "operation": "messages.create",
+        "request_id": "req-11",
+        "input_tokens": 200,
+        "output_tokens": 100,
+        "status": "success",
+    },
 ]
+
+# claude-sonnet-5 is $3.00 / $15.00 per Mtok in src/aprice/prices/anthropic.yaml.
+_SONNET_INPUT_RATE = 3.00
+_SONNET_OUTPUT_RATE = 15.00
+
+
+def _sonnet_cost(input_tokens: int, output_tokens: int) -> float:
+    return (
+        input_tokens / 1_000_000 * _SONNET_INPUT_RATE
+        + output_tokens / 1_000_000 * _SONNET_OUTPUT_RATE
+    )
 
 
 def _write_fixture(tmp_path):
@@ -202,9 +226,40 @@ def test_broken_and_duplicate_rows_are_skipped_not_fatal(tmp_path, capsys):
 
 def test_valid_rows_survive_alongside_the_broken_ones(tmp_path, capsys):
     _, payload = _run(tmp_path, capsys)
-    # 11 data rows minus the duplicate request_id (req-1 twice) and the
+    # 12 data rows minus the duplicate request_id (req-1 twice) and the
     # negative-token row (req-4), both rejected -- see the load_errors count.
-    assert payload["aggregate"]["total_request_count"] == 9
+    assert payload["aggregate"]["total_request_count"] == 10
+
+
+def test_project_level_groups_stay_separate_with_exact_totals(tmp_path, capsys):
+    _, payload = _run(tmp_path, capsys)
+    groups_by_project = {
+        g["project_id"]: g
+        for g in payload["aggregate"]["groups"]
+        if g["provider"] == "anthropic" and g["model"] == "claude-sonnet-5"
+    }
+
+    # proj-a: req-1, req-2, req-3, req-5, req-6, req-7, req-8, req-9 -- 8
+    # claude-sonnet-5 requests at 100/50 tokens each (req-10 is a different
+    # model and gets its own group; the duplicate req-1 and req-4 never
+    # made it into the log at all).
+    proj_a = groups_by_project["proj-a"]
+    assert proj_a["request_count"] == 8
+    assert proj_a["input_tokens"] == 800
+    assert proj_a["output_tokens"] == 400
+    assert proj_a["standard_cost_usd"] == _sonnet_cost(800, 400)
+
+    # proj-b: req-11 only, 200/100 tokens -- must not be merged into proj-a.
+    proj_b = groups_by_project["proj-b"]
+    assert proj_b["request_count"] == 1
+    assert proj_b["input_tokens"] == 200
+    assert proj_b["output_tokens"] == 100
+    assert proj_b["standard_cost_usd"] == _sonnet_cost(200, 100)
+
+    # The grand total is exactly the two priced groups summed -- the
+    # unpriced not-a-real-model request (req-10) must not contribute.
+    expected_total = _sonnet_cost(800, 400) + _sonnet_cost(200, 100)
+    assert payload["aggregate"]["total_standard_cost_usd"] == expected_total
 
 
 def test_only_the_explicit_retry_is_counted_not_the_ordinary_repeat(tmp_path, capsys):
