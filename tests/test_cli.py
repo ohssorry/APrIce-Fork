@@ -34,6 +34,20 @@ def _git(args: list[str], cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
+def _init_repo(tmp_path: Path) -> None:
+    _git(["init", "-q"], tmp_path)
+    _git(["config", "user.email", "test@example.com"], tmp_path)
+    _git(["config", "user.name", "Test"], tmp_path)
+
+
+def _commit_app(tmp_path: Path, source: str, message: str, *, branch: str | None = None) -> None:
+    (tmp_path / "app.py").write_text(source)
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "--allow-empty", "-m", message], tmp_path)
+    if branch:
+        _git(["branch", branch], tmp_path)
+
+
 def _diff_repo(tmp_path: Path) -> Path:
     """A repo with two commits: a 'base' branch, and HEAD with an added,
     a removed, and a changed call relative to it."""
@@ -328,3 +342,209 @@ def test_diff_restores_the_installed_price_directory_afterward(tmp_path, monkeyp
 
     assert pricing.PRICES_DIR == original_dir
     assert pricing.lookup("anthropic", "claude-sonnet-5") is not None
+
+
+# -- diff: --fail-on-risk --
+
+_CALL = "client.messages.create(model='claude-sonnet-5', max_tokens=1000, messages=[])\n"
+
+
+def test_fail_on_risk_blocks_a_new_call_added_inside_a_loop(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path, "import anthropic\nclient = anthropic.Anthropic()\n", "base", branch="base"
+    )
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor doc in docs:\n    {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["blocking_risks"][0]["kind"] == "new-loop-call"
+
+
+def test_fail_on_risk_blocks_loop_depth_increase_on_an_existing_call(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor x in a:\n    {_CALL}",
+        "base",
+        branch="base",
+    )
+    _commit_app(
+        tmp_path,
+        "import anthropic\nclient = anthropic.Anthropic()\n"
+        f"for x in a:\n    for y in b:\n        {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["blocking_risks"][0]["kind"] == "loop-depth-increased"
+
+
+def test_fail_on_risk_blocks_a_retry_bound_becoming_larger(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor attempt in range(2):\n    {_CALL}",
+        "base",
+        branch="base",
+    )
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor attempt in range(5):\n    {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["blocking_risks"][0]["kind"] == "loop-bound-worse"
+
+
+def test_fail_on_risk_blocks_a_known_retry_bound_becoming_unknown(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor attempt in range(2):\n    {_CALL}",
+        "base",
+        branch="base",
+    )
+    _commit_app(
+        tmp_path,
+        "import anthropic\n"
+        "client = anthropic.Anthropic()\n"
+        "n = get_n()\n"
+        f"for attempt in range(n):\n    {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["blocking_risks"][0]["kind"] == "loop-bound-worse"
+
+
+def test_fail_on_risk_does_not_block_a_loop_being_removed(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor x in a:\n    {_CALL}",
+        "base",
+        branch="base",
+    )
+    _commit_app(tmp_path, f"import anthropic\nclient = anthropic.Anthropic()\n{_CALL}", "head")
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk"])
+    capsys.readouterr()
+    assert code == 0
+
+
+def test_fail_on_risk_does_not_block_a_retry_bound_shrinking(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor attempt in range(5):\n    {_CALL}",
+        "base",
+        branch="base",
+    )
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor attempt in range(2):\n    {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk"])
+    capsys.readouterr()
+    assert code == 0
+
+
+def test_fail_on_risk_does_not_block_cost_or_model_changes_alone(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path,
+        "import anthropic\nclient = anthropic.Anthropic()\n"
+        "client.messages.create(model='claude-sonnet-5', max_tokens=1000, messages=[])\n",
+        "base",
+        branch="base",
+    )
+    _commit_app(
+        tmp_path,
+        "import anthropic\nclient = anthropic.Anthropic()\n"
+        "client.messages.create(model='claude-opus-5', max_tokens=4000, messages=[])\n",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["blocking_risks"] == []
+    assert payload["entries"]  # the model/cost change is still reported, just not blocking
+
+
+def test_fail_on_risk_blocks_a_changed_file_that_fails_to_parse_on_head(
+    tmp_path, monkeypatch, capsys
+):
+    _init_repo(tmp_path)
+    _commit_app(tmp_path, "value = 1\n", "base", branch="base")
+    _commit_app(tmp_path, "def broken(:\n", "head")
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main(
+        ["diff", "--base", "base", "--head", "HEAD", "--fail-on-risk", "--format", "json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    [risk] = payload["blocking_risks"]
+    assert risk["kind"] == "parse-failure"
+    assert risk["location"] == "app.py"
+
+
+def test_diff_without_fail_on_risk_flag_exits_zero_despite_a_blocking_risk(
+    tmp_path, monkeypatch, capsys
+):
+    _init_repo(tmp_path)
+    _commit_app(
+        tmp_path, "import anthropic\nclient = anthropic.Anthropic()\n", "base", branch="base"
+    )
+    _commit_app(
+        tmp_path,
+        f"import anthropic\nclient = anthropic.Anthropic()\nfor doc in docs:\n    {_CALL}",
+        "head",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    # Same scenario as the first --fail-on-risk test, but the flag is omitted.
+    code = cli.main(["diff", "--base", "base", "--head", "HEAD", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["blocking_risks"]  # still reported, just not gating without the flag

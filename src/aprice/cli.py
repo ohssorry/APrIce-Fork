@@ -79,6 +79,17 @@ def build_parser() -> argparse.ArgumentParser:
             f"from source (default: {pricing.DEFAULT_INPUT_TOKENS})."
         ),
     )
+    diff_cmd.add_argument(
+        "--fail-on-risk",
+        action="store_true",
+        help=(
+            "Exit 1 if this PR introduces a new or worsened structural risk "
+            "(a call moves into a loop, a loop gets deeper, a known retry "
+            "bound grows or becomes unknown, or a changed file stops "
+            "parsing). A cost increase, model swap, or unpriced call alone "
+            "does not trigger this. Use this to gate CI."
+        ),
+    )
     return parser
 
 
@@ -114,6 +125,9 @@ def _run_diff(args: argparse.Namespace) -> int:
         print(report.render_diff_json(result))
     else:
         print(report.render_diff_text(result))
+
+    if args.fail_on_risk and result.blocking_risks:
+        return 1
     return 0
 
 
