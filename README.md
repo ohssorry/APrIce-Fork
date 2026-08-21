@@ -1,5 +1,9 @@
 # APrIce
 
+[![CI](https://github.com/ohssorry/APrIce/actions/workflows/ci.yml/badge.svg)](https://github.com/ohssorry/APrIce/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Estimate what your API calls cost — before you merge them.**
 
 APrIce parses your source code, finds every paid API call, and reports what a
@@ -10,10 +14,10 @@ $ aprice scan src/
 APrIce: 5 API call(s) found
 
 Cost per request
-  src/summarize.py:16   claude-sonnet-5          $0.00780 – $0.01800
-  src/batch.py:31       claude-opus-5            $0.03600 – $0.10700
+  src/summarize.py:16   claude-sonnet-5          $0.00780 - $0.01800
+  src/batch.py:31       claude-opus-5            $0.03600 - $0.10700
 
-  Total per request: $0.04380 – $0.12500
+  Total per request: $0.04380 - $0.12500
 
 Findings
   ! src/batch.py:31  [call-in-loop] API call inside a loop: cost scales with
@@ -63,19 +67,16 @@ both of which *are* knowable from source — and flags the structural patterns
 (loops, unbounded `max_tokens`) where volume is the risk. It does not multiply
 by a made-up traffic number and call the result a forecast.
 
-Full reasoning in [`docs/methodology.md`](docs/methodology.md).
+Full reasoning in [`docs/methodology.md`](docs/methodology.md). For how the
+pipeline is put together, see [`docs/architecture.md`](docs/architecture.md).
 
 ## Install
 
-```console
-pip install aprice          # not yet published
-```
-
-From source:
+Not yet published to PyPI — install from source:
 
 ```console
-git clone https://github.com/APrIce-dev/aprice
-cd aprice
+git clone https://github.com/ohssorry/APrIce.git
+cd APrIce
 pip install -e ".[dev]"
 ```
 
@@ -96,12 +97,13 @@ your actual working tree, staged or unstaged changes included.
 
 | Provider | Detection | Prices verified |
 |---|---|---|
-| Anthropic | `.messages.create()`, `.messages.stream()` | ✅ 2026-08-17 |
-| OpenAI | `.chat.completions.create()`, `.responses.create()` | ⚠️ placeholder |
-| Google | `.generate_content()` | ⚠️ placeholder |
+| Anthropic | `.messages.create()`, `.messages.stream()`, `.messages.batches.create()` | ✅ 2026-08-17 |
+| OpenAI | `.chat.completions.create()`, `.responses.create()`, `.completions.create()`, `.embeddings.create()`, `.images.*()`, `.audio.*()` | ✅ 2026-08-19 |
+| Google | `.generate_content()`, `.models.embed_content()` | ✅ 2026-08-19 |
 
-Only Anthropic prices are verified so far. **Verifying the OpenAI and Google
-tables is a good first contribution** — see the open issues.
+Prices are pinned to each entry's `verified_on` date in
+[`src/aprice/prices/`](src/aprice/prices/) — check there for the current
+date, since prices drift and this table won't always catch up first.
 
 ## Contributing
 

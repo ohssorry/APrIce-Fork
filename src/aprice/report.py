@@ -113,6 +113,10 @@ def _call_dict(call: ApiCall) -> dict:
         "model": call.model,
         "max_tokens": call.max_tokens,
         "loop_depth": call.loop_depth,
+        # Outermost to innermost, matching ApiCall.loop_bounds. An element is
+        # the literal iteration cap (range(5) -> 5) or null when the bound
+        # isn't visible in source (range(n), a general iterable, while).
+        "loop_bounds": list(call.loop_bounds),
     }
 
 
