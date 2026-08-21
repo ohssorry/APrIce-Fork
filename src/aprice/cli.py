@@ -93,9 +93,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _check_input_tokens(input_tokens: int) -> str | None:
+    # input_tokens is a user-supplied assumption (see DEFAULT_INPUT_TOKENS),
+    # not a derived value -- zero is a legitimate assumption (an empty
+    # prompt), but negative isn't a valid token count at all.
+    if input_tokens < 0:
+        return f"--input-tokens must be >= 0, got {input_tokens}"
+    return None
+
+
 def _run_scan(args: argparse.Namespace) -> int:
     if not args.path.exists():
         print(f"aprice: no such file or directory: {args.path}", file=sys.stderr)
+        return 2
+
+    if (error := _check_input_tokens(args.input_tokens)) is not None:
+        print(f"aprice: {error}", file=sys.stderr)
         return 2
 
     result = scan(args.path, input_tokens=args.input_tokens)
@@ -113,6 +126,10 @@ def _run_scan(args: argparse.Namespace) -> int:
 
 
 def _run_diff(args: argparse.Namespace) -> int:
+    if (error := _check_input_tokens(args.input_tokens)) is not None:
+        print(f"aprice: {error}", file=sys.stderr)
+        return 2
+
     try:
         result = diff.compare(args.path, args.base, args.head, input_tokens=args.input_tokens)
     except diff.GitRefError as exc:
