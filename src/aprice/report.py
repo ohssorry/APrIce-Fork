@@ -1,8 +1,18 @@
-"""Rendering a ScanResult as terminal text or as a PR comment."""
+"""Rendering a ScanResult as terminal text, a PR comment, or JSON."""
 
 from __future__ import annotations
 
-from .models import ScanResult
+import json
+
+from .diff import CallDiff, DiffResult, RiskFlag
+from .models import ApiCall, ScanResult
+
+# Bumped independently when either shape changes, so a consumer can detect a
+# format it doesn't understand instead of misparsing it. diff JSON carries
+# blocking_risks that scan JSON has no equivalent of, so the two versions
+# move separately rather than sharing one counter.
+SCAN_JSON_SCHEMA_VERSION = 1
+DIFF_JSON_SCHEMA_VERSION = 2
 
 
 def _usd(amount: float) -> str:
@@ -94,3 +104,165 @@ def render_markdown(result: ScanResult, title: str = "APrIce cost report") -> st
         "See `docs/methodology.md`.</sub>"
     )
     return "\n".join(lines)
+
+
+def _call_dict(call: ApiCall) -> dict:
+    return {
+        "location": call.location,
+        "file": call.file.replace("\\", "/"),
+        "line": call.line,
+        "provider": call.provider,
+        "model": call.model,
+        "max_tokens": call.max_tokens,
+        "loop_depth": call.loop_depth,
+        # Outermost to innermost, matching ApiCall.loop_bounds. An element is
+        # the literal iteration cap (range(5) -> 5) or null when the bound
+        # isn't visible in source (range(n), a general iterable, while).
+        "loop_bounds": list(call.loop_bounds),
+    }
+
+
+def render_json(result: ScanResult) -> str:
+    """Render a ScanResult as machine-readable JSON.
+
+    Cost is always a {low, high} pair, never collapsed to one number -- the
+    whole point of the range is that call volume isn't known. See
+    docs/methodology.md.
+    """
+    payload = {
+        "schema_version": SCAN_JSON_SCHEMA_VERSION,
+        "estimates": [
+            {
+                **_call_dict(est.call),
+                "cost_usd": {"low": est.low_usd, "high": est.high_usd},
+            }
+            for est in result.estimates
+        ],
+        "total_cost_usd": {"low": result.low_usd, "high": result.high_usd},
+        "unpriced": [_call_dict(call) for call in result.unpriced],
+        "findings": [
+            {
+                "location": finding.call.location,
+                "rule": finding.rule,
+                "severity": finding.severity,
+                "message": finding.message,
+            }
+            for finding in result.findings
+        ],
+    }
+    return json.dumps(payload, indent=2)
+
+
+_STATUS_MARKER = {"added": "+", "removed": "-", "changed": "~"}
+
+
+def _signed_usd(amount: float) -> str:
+    sign = "+" if amount >= 0 else "-"
+    return f"{sign}{_usd(abs(amount))}"
+
+
+def _entry_call(entry: CallDiff) -> ApiCall:
+    call = entry.head if entry.head is not None else entry.base
+    assert call is not None
+    return call
+
+
+def _entry_cost_text(entry: CallDiff) -> str:
+    # base_cost and head_cost are both None for an added/removed call that
+    # was never priced (dynamic model, unknown price) -- report it as
+    # "unpriced" rather than dropping it, so a volume change in unpriced
+    # calls is still visible.
+    if entry.base_cost is None and entry.head_cost is None:
+        return "unpriced"
+    b_low, b_high = entry.base_cost or (0.0, 0.0)
+    h_low, h_high = entry.head_cost or (0.0, 0.0)
+    return f"low {_signed_usd(h_low - b_low)}  high {_signed_usd(h_high - b_high)}"
+
+
+def render_diff_text(diff: DiffResult) -> str:
+    lines = [f"APrIce: cost delta {diff.base_ref} -> {diff.head_ref}\n"]
+
+    if not diff.entries:
+        lines.append("No API call changes detected.")
+    else:
+        for entry in diff.entries:
+            call = _entry_call(entry)
+            model = call.model or "<dynamic>"
+            lines.append(
+                f"  {_STATUS_MARKER[entry.status]} {call.location}  "
+                f"{call.provider}/{model:<24} {_entry_cost_text(entry)}  [{entry.status}]"
+            )
+
+    lines.append(
+        f"\n  Net change per request: low {_signed_usd(diff.delta_low)}  "
+        f"high {_signed_usd(diff.delta_high)}"
+    )
+
+    if diff.blocking_risks:
+        lines.append(f"\n  ! {len(diff.blocking_risks)} new blocking risk(s):")
+        for risk in diff.blocking_risks:
+            lines.append(f"    [{risk.kind}] {risk.location}  {risk.message}")
+
+    return "\n".join(lines)
+
+
+def render_diff_markdown(diff: DiffResult) -> str:
+    lines = [f"## APrIce cost delta: `{diff.base_ref}` -> `{diff.head_ref}`", ""]
+
+    if not diff.entries:
+        lines.append("No API call changes detected.")
+    else:
+        lines.append("| | Location | Model | Cost change per request |")
+        lines.append("|---|---|---|---|")
+        for entry in diff.entries:
+            call = _entry_call(entry)
+            lines.append(
+                f"| {_STATUS_MARKER[entry.status]} | `{call.location}` | "
+                f"`{call.provider}/{call.model or '<dynamic>'}` | {_entry_cost_text(entry)} |"
+            )
+        lines.append("")
+
+    lines.append(
+        f"**Net change per request: low {_signed_usd(diff.delta_low)}, "
+        f"high {_signed_usd(diff.delta_high)}**"
+    )
+
+    if diff.blocking_risks:
+        lines.append("")
+        lines.append(f"### Blocking risks ({len(diff.blocking_risks)})")
+        for risk in diff.blocking_risks:
+            lines.append(f"- **`{risk.location}`** [{risk.kind}] {risk.message}")
+
+    lines.append("")
+    lines.append(
+        "<sub>Per-request cost only -- call volume is not inferred from source. "
+        "See `docs/methodology.md`.</sub>"
+    )
+    return "\n".join(lines)
+
+
+def _risk_dict(risk: RiskFlag) -> dict:
+    return {"kind": risk.kind, "location": risk.location, "message": risk.message}
+
+
+def render_diff_json(diff: DiffResult) -> str:
+    def cost_obj(cost: tuple[float, float] | None) -> dict | None:
+        return {"low": cost[0], "high": cost[1]} if cost is not None else None
+
+    payload = {
+        "schema_version": DIFF_JSON_SCHEMA_VERSION,
+        "base_ref": diff.base_ref,
+        "head_ref": diff.head_ref,
+        "entries": [
+            {
+                "status": entry.status,
+                **_call_dict(_entry_call(entry)),
+                "base_cost_usd": cost_obj(entry.base_cost),
+                "head_cost_usd": cost_obj(entry.head_cost),
+            }
+            for entry in diff.entries
+        ],
+        "total_delta_usd": {"low": diff.delta_low, "high": diff.delta_high},
+        "blocking_risks": [_risk_dict(risk) for risk in diff.blocking_risks],
+    }
+    return json.dumps(payload, indent=2)

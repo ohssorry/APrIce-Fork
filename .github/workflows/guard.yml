@@ -1,0 +1,90 @@
+name: APrIce Guard
+
+on:
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: pip install -e .
+
+      # Never fails this step itself -- the exit code is recorded as an
+      # output and acted on later, after the comment is posted. That way a
+      # blocking risk still gets its analysis posted before it gates the PR.
+      - name: Run aprice diff
+        id: diff
+        run: |
+          set +e
+          aprice diff \
+            --base "origin/${{ github.base_ref }}" \
+            --head HEAD \
+            --format markdown \
+            --fail-on-risk \
+            > guard-report.md 2> guard-error.txt
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" != "0" ] && [ "$code" != "1" ]; then
+            echo "aprice diff exited $code:"
+            cat guard-error.txt
+          fi
+
+      # Falls back to the job summary if the token can't post PR comments --
+      # a token for a pull_request from a fork is read-only regardless of
+      # the permissions block above, so this is the normal path there.
+      - name: Post or update Guard comment
+        if: steps.diff.outputs.exit_code != '2'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('guard-report.md', 'utf8');
+            const marker = '<!-- aprice-guard -->';
+            const body = `${marker}\n${report}`;
+
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+              const existing = comments.find((c) => c.body && c.body.includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+              }
+            } catch (error) {
+              core.warning(`Could not post a PR comment (${error.message}); writing to the job summary instead.`);
+              await core.summary.addRaw(report).write();
+            }
+
+      - name: Gate on a new blocking risk
+        if: steps.diff.outputs.exit_code != '0'
+        run: exit ${{ steps.diff.outputs.exit_code }}

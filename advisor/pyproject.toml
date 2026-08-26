@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aprice-advisor"
+version = "0.1.0"
+description = "Analyzes real API usage logs to find waste APrIce's static analysis can't see"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    # A real version dependency, not a path -- resolvable once `aprice` is
+    # published. Until then, satisfy it locally by installing the root
+    # package editable into the same environment *before* this one: see
+    # advisor/README.md. See #34/#54 for why this isn't a file:// reference.
+    "aprice>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+aprice-advisor = "aprice_advisor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aprice_advisor"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

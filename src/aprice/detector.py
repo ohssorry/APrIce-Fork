@@ -17,19 +17,48 @@ read keyword arguments -- both of which we need.
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 
 from .models import ApiCall
+
+
+class ParseFailureWarning(UserWarning):
+    """A Python file could not be parsed and was excluded from analysis."""
+
 
 # Suffix of the callee's dotted path -> provider key in the price database.
 CALL_SIGNATURES: dict[tuple[str, ...], str] = {
     ("messages", "create"): "anthropic",
     ("messages", "stream"): "anthropic",
+    ("messages", "batches", "create"): "anthropic",
     ("chat", "completions", "create"): "openai",
     ("responses", "create"): "openai",
+    ("completions", "create"): "openai",
+    ("embeddings", "create"): "openai",
+    ("images", "generate"): "openai",
+    ("images", "edit"): "openai",
+    ("images", "create_variation"): "openai",
+    ("audio", "speech", "create"): "openai",
+    ("audio", "transcriptions", "create"): "openai",
+    ("audio", "translations", "create"): "openai",
     ("generate_content",): "google",
     ("models", "generate_content"): "google",
+    ("models", "embed_content"): "google",
 }
+
+# Prefer the most specific suffix without sorting the same static table for
+# every Call node visited in a source tree.
+CALL_SIGNATURES_LONGEST_FIRST = tuple(sorted(CALL_SIGNATURES, key=len, reverse=True))
+
+# SDKs name the same output ceiling differently. Keep this translation next
+# to call detection so pricing and rules can continue to use one normalized
+# ApiCall field without depending on provider-specific argument names.
+OUTPUT_TOKEN_ARGUMENTS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("chat", "completions", "create"): ("max_completion_tokens", "max_tokens"),
+    ("responses", "create"): ("max_output_tokens", "max_tokens"),
+}
+DEFAULT_OUTPUT_TOKEN_ARGUMENTS = ("max_tokens",)
 
 
 def _dotted_path(node: ast.AST) -> tuple[str, ...]:
@@ -45,10 +74,14 @@ def _dotted_path(node: ast.AST) -> tuple[str, ...]:
     return tuple(reversed(parts))
 
 
-def _match_provider(path: tuple[str, ...]) -> str | None:
-    for signature, provider in CALL_SIGNATURES.items():
+def _match_signature(path: tuple[str, ...]) -> tuple[str, ...] | None:
+    for signature in CALL_SIGNATURES_LONGEST_FIRST:
+        # A bare local function can share an endpoint name. SDK calls always
+        # have a client or model object before a one-part signature.
+        if len(signature) == 1 and len(path) == 1:
+            continue
         if len(path) >= len(signature) and path[-len(signature) :] == signature:
-            return provider
+            return signature
     return None
 
 
@@ -62,39 +95,119 @@ def _literal(node: ast.AST | None) -> object | None:
         return None
 
 
+def _output_token_limit(signature: tuple[str, ...], kwargs: dict[str, ast.AST]) -> object | None:
+    argument_names = OUTPUT_TOKEN_ARGUMENTS.get(signature, DEFAULT_OUTPUT_TOKEN_ARGUMENTS)
+    for name in argument_names:
+        if name in kwargs:
+            return _literal(kwargs[name])
+    return None
+
+
+def _literal_range_bound(iterable: ast.AST) -> int | None:
+    """Return an exact iteration count for a literal built-in range call."""
+    if not isinstance(iterable, ast.Call):
+        return None
+    if _dotted_path(iterable.func) != ("range",) or iterable.keywords:
+        return None
+    if not 1 <= len(iterable.args) <= 3:
+        return None
+
+    values = [_literal(argument) for argument in iterable.args]
+    if any(type(value) is not int for value in values):
+        return None
+
+    try:
+        return len(range(*values))
+    except (OverflowError, ValueError):
+        return None
+
+
 class _CallVisitor(ast.NodeVisitor):
     def __init__(self, filename: str) -> None:
         self.filename = filename
         self.calls: list[ApiCall] = []
         self._loop_depth = 0
+        self._loop_bounds: list[int | None] = []
 
-    def _visit_loop(self, node: ast.AST) -> None:
+    def _visit_repeated(self, nodes: list[ast.AST], bound: int | None) -> None:
         self._loop_depth += 1
-        self.generic_visit(node)
-        self._loop_depth -= 1
+        self._loop_bounds.append(bound)
+        try:
+            for node in nodes:
+                self.visit(node)
+        finally:
+            self._loop_bounds.pop()
+            self._loop_depth -= 1
 
-    visit_For = _visit_loop
-    visit_AsyncFor = _visit_loop
-    visit_While = _visit_loop
-    visit_ListComp = _visit_loop
-    visit_SetComp = _visit_loop
-    visit_DictComp = _visit_loop
-    visit_GeneratorExp = _visit_loop
+    def visit_For(self, node: ast.For) -> None:
+        # Python evaluates the iterable once before entering the loop. The
+        # target and body repeat, while ``else`` runs once after exhaustion.
+        self.visit(node.iter)
+        self._visit_repeated([node.target, *node.body], _literal_range_bound(node.iter))
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self._visit_repeated([node.target, *node.body], None)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_While(self, node: ast.While) -> None:
+        # The condition is evaluated for every attempted iteration, so calls
+        # in it carry the same unknown bound as calls in the body.
+        self._visit_repeated([node.test, *node.body], None)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def _visit_comprehension(
+        self, generators: list[ast.comprehension], result_nodes: tuple[ast.AST, ...]
+    ) -> None:
+        starting_depth = self._loop_depth
+        starting_bounds = len(self._loop_bounds)
+        try:
+            for generator in generators:
+                # The first iterable is evaluated before its loop starts. Each
+                # later iterable is evaluated inside all preceding loops.
+                self.visit(generator.iter)
+                self._loop_depth += 1
+                self._loop_bounds.append(_literal_range_bound(generator.iter))
+                self.visit(generator.target)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for result_node in result_nodes:
+                self.visit(result_node)
+        finally:
+            self._loop_depth = starting_depth
+            del self._loop_bounds[starting_bounds:]
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, (node.key, node.value))
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
 
     def visit_Call(self, node: ast.Call) -> None:
-        provider = _match_provider(_dotted_path(node.func))
-        if provider is not None:
+        signature = _match_signature(_dotted_path(node.func))
+        if signature is not None:
             kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
             model = _literal(kwargs.get("model"))
-            max_tokens = _literal(kwargs.get("max_tokens"))
+            max_tokens = _output_token_limit(signature, kwargs)
             self.calls.append(
                 ApiCall(
-                    provider=provider,
+                    provider=CALL_SIGNATURES[signature],
                     file=self.filename,
                     line=node.lineno,
                     model=model if isinstance(model, str) else None,
                     max_tokens=max_tokens if isinstance(max_tokens, int) else None,
                     loop_depth=self._loop_depth,
+                    loop_bounds=tuple(self._loop_bounds),
                 )
             )
         self.generic_visit(node)
@@ -108,7 +221,15 @@ def scan_source(source: str, filename: str) -> list[ApiCall]:
     """
     try:
         tree = ast.parse(source, filename=filename)
-    except SyntaxError:
+    except SyntaxError as error:
+        line = error.lineno or 1
+        column = error.offset if error.offset is not None else "unknown"
+        warnings.warn_explicit(
+            f"Could not parse Python source at column {column}: {error.msg}",
+            ParseFailureWarning,
+            filename=filename,
+            lineno=line,
+        )
         return []
     visitor = _CallVisitor(filename)
     visitor.visit(tree)
